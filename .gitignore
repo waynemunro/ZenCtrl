@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.so
+
+*.egg
+
+# Virtual environment
+venv/
+env/
+.env
+.venv
+
+# IDEs and editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Build artifacts
+build/
+dist/
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Project specific
+offload_weights/
+
+# If your model weights in the 'weights/' directory are large and downloaded
+# (not custom-trained and essential to the repo history), uncomment the next line:
+# weights/
+

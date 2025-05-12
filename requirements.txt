@@ -1,9 +1,19 @@
-transformers
+debugpy>=1.8.1
+gradio==4.29.0
+torch>=2.3.0
+transformers>=4.40.1
+accelerate>=0.30.0
+invisible-watermark>=0.2.0
+safetensors>=0.4.3
+# Dependencies from LeniaOodaStrategy
+pandas>=1.3.0
+numpy>=1.20.0
+python-binance>=1.0.19
+# Existing/other dependencies
 diffusers==0.31.0
 peft==0.15.2
 opencv-python
 protobuf
 sentencepiece
-gradio
 jupyter
 torchao
