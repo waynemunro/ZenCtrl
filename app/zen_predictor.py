@@ -6,19 +6,29 @@ based on market data and then interprets these visualizations to derive
 trading signals.
 '''
 import torch
-from PIL import Image
-import pandas as pd # For handling market_data examples
+from PIL import Image, ImageStat
+import pandas as pd
+import numpy as np
+import logging
 
-# Assuming flux.generate will be importable after sys.path modifications
-# in gradio_app.py or if ZenCtrl is in PYTHONPATH.
-# from flux.generate import generate, FluxPipelineOutput
+# Configure logging for this module
+logger = logging.getLogger(__name__)
 
-# Global placeholder for the initialized pipeline instance
+# Attempt to import flux.generate, relying on sys.path modification by the caller (gradio_app.py)
+try:
+    from flux.generate import generate as flux_generate_func
+except ImportError:
+    flux_generate_func = None
+    logger.warning("flux.generate could not be imported in zen_predictor.py. ZEN image generation will be disabled.")
+
+# Global placeholder for the initialized pipeline instance (can be used by other functions if needed)
 _pipeline = None
 
 def initialize_zen_predictor(pipeline_instance):
     """
     Initializes the ZEN predictor with the main image generation pipeline.
+    This allows other functions in this module to potentially use a globally set pipeline.
+    For the backtesting flow via get_zen_signal, the pipeline is passed explicitly.
 
     Args:
         pipeline_instance: The initialized FluxPipeline object.
@@ -26,179 +36,270 @@ def initialize_zen_predictor(pipeline_instance):
     global _pipeline
     _pipeline = pipeline_instance
     if _pipeline is not None:
-        print("ZEN Predictor initialized with pipeline.")
+        logger.info("ZEN Predictor globally initialized with pipeline.")
     else:
-        print("Warning: ZEN Predictor initialized with a None pipeline.")
+        logger.warning("ZEN Predictor globally initialized with a None pipeline.")
 
-def construct_prompt_for_zen(market_data, strategy_params):
+def construct_prompt_for_zen(current_market_data: pd.DataFrame, historical_data_summary: pd.Series, base_prompt: str, strategy_params: dict = None) -> str:
     """
     Constructs a text prompt for the ZEN image generation model
-    based on current market data and strategy parameters.
+    based on current market data, historical summary, a base user prompt, and strategy parameters.
 
     Args:
-        market_data (pd.DataFrame or dict): Current and recent market data.
-                                            Example: pd.DataFrame with 'close', 'volume' columns.
-        strategy_params (dict): Parameters of the trading strategy.
+        current_market_data (pd.DataFrame): Slice of recent market data (OHLCV).
+        historical_data_summary (pd.Series): Summary statistics of the entire historical dataset.
+        base_prompt (str): A user-defined base prompt.
+        strategy_params (dict, optional): Parameters of the trading strategy.
 
     Returns:
         str: A text prompt for the ZEN model.
     """
-    # --- TODO: Implement sophisticated prompt engineering based on market_data and strategy_params ---
-    # Example using pandas DataFrame (ensure market_data is in this format or adapt):
-    # try:
-    #     latest_close = market_data['close'].iloc[-1]
-    #     prev_close = market_data['close'].iloc[-2] if len(market_data['close']) >= 2 else latest_close
-    #     trend = "upward" if latest_close > prev_close else "downward" if latest_close < prev_close else "sideways"
-    #     prompt = f"Market sentiment: {trend} trend, price at {latest_close:.2f}. Visualize abstract energy flow and near-term potential."
-    # except Exception as e:
-    #     print(f"Error constructing prompt from market_data: {e}")
-    prompt = "Visualize the underlying sentiment and near-term future potential of the current financial market state, abstract representation."
-    
-    # Consider incorporating strategy_params if relevant, e.g.:
-    # if "asset_name" in strategy_params:
-    #     prompt += f" Focus on {strategy_params['asset_name']}."
-    return prompt
+    if strategy_params is None:
+        strategy_params = {}
 
-def analyze_zen_image_to_signal(image: Image.Image):
+    prompt_parts = [base_prompt]
+
+    # Details from current_market_data (the slice)
+    if not current_market_data.empty:
+        latest_close = current_market_data['close'].iloc[-1]
+        latest_volume = current_market_data['volume'].iloc[-1]
+        prompt_parts.append(f"Current market: Price={latest_close:.2f}, Volume={latest_volume:.0f}.")
+
+        if len(current_market_data) > 1:
+            prev_close = current_market_data['close'].iloc[-2]
+            price_change = latest_close - prev_close
+            trend_direction = "upward" if price_change > 0 else "downward" if price_change < 0 else "stable"
+            prompt_parts.append(f"Short-term trend: {trend_direction} ({price_change:+.2f}).")
+        
+        avg_slice_vol = current_market_data['volume'].mean()
+        prompt_parts.append(f"Recent average volume: {avg_slice_vol:.0f}.")
+
+    # Details from historical_data_summary
+    summary_desc = []
+    if 'close_mean' in historical_data_summary:
+        summary_desc.append(f"AvgPrice={historical_data_summary['close_mean']:.2f}")
+    if 'close_std' in historical_data_summary:
+        summary_desc.append(f"Volatility(StdDev)={historical_data_summary['close_std']:.2f}")
+    if 'total_period_return' in historical_data_summary:
+        summary_desc.append(f"TotalReturn={historical_data_summary['total_period_return']:.2%}")
+    if summary_desc:
+        prompt_parts.append(f"Historical context: {', '.join(summary_desc)}.")
+
+    # Details from strategy_params
+    asset_name = strategy_params.get('asset', 'the asset') # Assuming 'asset' might be in params
+    prompt_parts.append(f"Focus: {asset_name}.")
+    
+    # Combine into a single prompt string
+    final_prompt = " ".join(prompt_parts)
+    logger.debug(f"Constructed ZEN prompt: {final_prompt}")
+    return final_prompt
+
+def analyze_zen_image_to_signal(image: Image.Image) -> float:
     """
     Analyzes the generated ZEN image to extract a trading signal.
+    Placeholder implementation: uses average brightness.
 
     Args:
         image (PIL.Image.Image): The image generated by the ZEN model.
 
     Returns:
-        str or float: A trading signal (e.g., "BUY", "SELL", "HOLD", or a numeric score like -1.0 to 1.0).
+        float: A trading signal between -1.0 (strong sell) and 1.0 (strong buy).
+               Returns 0.0 if image is None.
     """
-    # --- TODO: Implement image analysis logic --- 
-    # This is a critical and complex part. It could involve:
-    # 1. Simple heuristics (dominant color, brightness, texture complexity).
-    # 2. Pre-trained image classification/feature extraction models.
-    # 3. A custom-trained model to map ZEN images to signals.
-    # 4. OCR if the image is expected to contain text/numbers.
+    if image is None:
+        logger.warning("analyze_zen_image_to_signal received None image. Returning neutral signal.")
+        return 0.0
 
-    # Example placeholder logic:
-    # For now, let's imagine a very simple heuristic based on average brightness.
-    # This is purely illustrative and likely not effective.
-    # if image:
-    #     gs_image = image.convert("L")
-    #     stat = ImageStat.Stat(gs_image)
-    #     avg_brightness = stat.mean[0]
-    #     if avg_brightness > 150: return "BUY" # Bright image = positive
-    #     if avg_brightness < 100: return "SELL" # Dark image = negative
+    try:
+        gs_image = image.convert("L")  # Convert to grayscale
+        pixels = np.array(gs_image)
+        avg_intensity = np.mean(pixels)  # Average pixel intensity (0-255)
+
+        # Normalize to -1.0 to 1.0 (127.5 is neutral 0.0)
+        signal = (avg_intensity / 127.5) - 1.0
+        signal = np.clip(signal, -1.0, 1.0) # Ensure it's within bounds
         
-    print("ZEN image received for analysis. (Placeholder: returning HOLD)")
-    return "HOLD" # Default/fallback signal
+        logger.debug(f"ZEN image analysis: avg_intensity={avg_intensity:.2f}, signal={signal:.4f}")
+        return float(signal)
+    except Exception as e:
+        logger.error(f"Error during ZEN image analysis: {e}. Returning neutral signal.")
+        return 0.0
 
-def get_zen_signal(market_data, strategy_params, generation_params=None):
+def get_zen_signal(
+    current_market_data: pd.DataFrame, 
+    historical_data_summary: pd.Series, 
+    base_prompt: str, 
+    flux_pipe,  # The initialized FLUX pipeline object
+    model_config: dict, 
+    strategy_params: dict = None
+) -> float:
     """
     Generates a ZEN image based on market data and strategy parameters,
     then analyzes it to produce a trading signal.
 
     Args:
-        market_data (pd.DataFrame or dict): Current market data.
-        strategy_params (dict): Parameters for the trading strategy.
-        generation_params (dict, optional): Parameters for flux.generate.generate
-                                          (e.g., height, width, num_inference_steps).
+        current_market_data (pd.DataFrame): Slice of recent market data.
+        historical_data_summary (pd.Series): Summary statistics of the entire historical dataset.
+        base_prompt (str): User-defined base prompt.
+        flux_pipe: The initialized FLUX pipeline object.
+        model_config (dict): Configuration for the image generation (height, width, steps, etc.).
+        strategy_params (dict, optional): Parameters of the trading strategy.
 
     Returns:
-        str or float: The trading signal derived from the ZEN image.
-                      Returns a default signal (e.g., "HOLD" or 0.0) if pipeline is not initialized,
-                      generation fails, or analysis fails.
+        float: A trading signal between -1.0 and 1.0. Returns 0.0 if generation or analysis fails.
     """
-    if _pipeline is None:
-        print("Error: ZEN Predictor pipeline not initialized. Returning default signal.")
-        return "HOLD" # Or appropriate default numeric signal like 0.0
+    if flux_generate_func is None or flux_pipe is None:
+        logger.warning("FLUX generate function or pipeline not available. ZEN signal generation skipped.")
+        return 0.0
 
-    prompt = construct_prompt_for_zen(market_data, strategy_params)
+    if strategy_params is None:
+        strategy_params = {}
 
-    # Default parameters for the image generation, can be overridden by generation_params
-    # These should align with what flux.generate.generate expects in its **params
-    current_generation_params = {
-        "prompt": prompt,
-        "height": 512, # Consider making these configurable or deriving from pipeline defaults
-        "width": 512,
-        "num_inference_steps": 20, # Fewer steps for faster inference during backtesting
-        "guidance_scale": 3.0,
-        "output_type": "pil", # Ensure flux.generate can return PIL images
-        # Add any other relevant parameters for flux.generate.generate
-    }
-    if generation_params:
-        current_generation_params.update(generation_params)
+    # 1. Construct the prompt
+    prompt = construct_prompt_for_zen(current_market_data, historical_data_summary, base_prompt, strategy_params)
 
-    print(f"Generating ZEN image with prompt: '{prompt[:100]}...'") # Log truncated prompt
+    # 2. Generate the image
+    generated_image = None
     try:
-        # Dynamically import 'generate' to ensure it's found after sys.path modifications
-        from flux.generate import generate, FluxPipelineOutput
-
-        # Ensure the pipeline is on the correct device (it should be managed by the pipeline itself or generate fn)
-        # _pipeline.to(_pipeline.device) # Typically not needed here if pipeline handles its device
-
-        generated_output = generate(
-            pipeline=_pipeline,
-            **current_generation_params
-        )
+        logger.info(f"Generating ZEN image with prompt: {prompt[:200]}...") # Log a snippet
+        # Ensure all necessary parameters for flux_generate_func are present in model_config or defaulted
+        height = model_config.get("height", 1024)
+        width = model_config.get("width", 1024)
+        num_inference_steps = model_config.get("num_inference_steps", 20)
+        guidance_scale = model_config.get("guidance_scale", 7.0)
+        # Seed could be fixed for a run, or varied. For backtesting, fixing per step might be too slow.
+        # Using a default or random seed for now.
+        seed = model_config.get("seed") # Allow seed to be None for random
         
-        if isinstance(generated_output, tuple):
-            # If generate returns a tuple (image,) as per its non-return_dict=True path
-            zen_image = generated_output[0]
-        elif hasattr(generated_output, 'images') and generated_output.images:
-            # If generate returns FluxPipelineOutput (return_dict=True path)
-            zen_image = generated_output.images[0]
+        # The flux_generate_func is imported from flux.generate
+        # Its signature based on gradio_app.py usage:
+        # flux_generate(pipe, prompt, negative_prompt, height, width, num_inference_steps, guidance_scale, seed)
+        images_output = flux_generate_func(
+            flux_pipe,
+            prompt,
+            None,  # negative_prompt - not currently used
+            height,
+            width,
+            num_inference_steps,
+            guidance_scale,
+            seed # Pass seed, can be None
+        )
+        if images_output and isinstance(images_output, list) and len(images_output) > 0:
+            generated_image = images_output[0]
+            logger.info("ZEN image generated successfully.")
         else:
-            zen_image = None
+            logger.warning("ZEN image generation did not return a valid image.")
 
-        if zen_image and isinstance(zen_image, Image.Image):
-            # For debugging, you might want to save the image:
-            # zen_image.save("d:/source/ZenCtrl/samples/zen_signal_debug.png")
-            signal = analyze_zen_image_to_signal(zen_image)
-            return signal
-        else:
-            print("Error: ZEN image generation did not return a valid PIL image. Returning default signal.")
-            return "HOLD"
-
-    except ImportError as e:
-        print(f"Error importing flux.generate: {e}. Ensure ZenCtrl is in PYTHONPATH or sys.path. Returning default signal.")
-        return "HOLD"
     except Exception as e:
-        print(f"Error during ZEN image generation or analysis: {e}. Returning default signal.")
-        # Consider if pipeline needs to be moved to CPU or reset on certain errors
-        # if hasattr(_pipeline, 'to'): _pipeline.to('cpu')
-        return "HOLD"
+        logger.error(f"Error during ZEN image generation: {e}", exc_info=True)
+        return 0.0 # Return neutral signal on error
 
-# --- Example Conceptual Usage (Not run directly without pipeline initialization) ---
-# if __name__ == "__main__":
-#     # This block is for conceptual understanding. 
-#     # _pipeline must be initialized by an external caller (e.g., gradio_app.py).
-#
-#     print("ZEN Predictor module - conceptual test.")
-#     print("Note: This test requires the pipeline to be initialized externally.")
-#
-#     if _pipeline is None:
-#         print("Simulating pipeline initialization for conceptual test (actual init must be external).")
-#         # In a real scenario, you wouldn't do this here. init_pipeline is in gradio_app.
-#         # from gradio_app import init_pipeline # Avoid circular import
-#         class MockPipeline:
-#             def __init__(self):
-#                 self.device = 'cpu'
-#                 print("MockPipeline initialized for testing.")
-#         # _pipeline = MockPipeline() # This is just a stand-in
-#         # initialize_zen_predictor(_pipeline) # Call the proper init function
-#         print("Mock pipeline setup. Actual pipeline needed for real execution.")
-# 
-#     if _pipeline is not None: # Check if (mock) initialized
-#         # Create dummy data for testing
-#         dummy_market_data = pd.DataFrame({
-#             'timestamp': pd.to_datetime(['2023-01-01 10:00:00', '2023-01-01 10:05:00']),
-#             'open': [100.0, 101.0],
-#             'high': [102.0, 101.5],
-#             'low': [99.5, 100.5],
-#             'close': [101.0, 100.8],
-#             'volume': [1000, 1200]
-#         })
-#         dummy_strategy_params = {"asset_name": "BTC/USDT", "rsi_period": 14}
-#         
-#         print("\nAttempting to get ZEN signal with dummy data...")
-#         signal = get_zen_signal(dummy_market_data, dummy_strategy_params)
-#         print(f"Received ZEN signal: {signal}")
-#     else:
-#         print("Pipeline not initialized. Cannot run get_zen_signal example.")
+    # 3. Analyze the image
+    signal = analyze_zen_image_to_signal(generated_image)
+    
+    return signal
+
+# Example usage (for testing this module standalone, if FLUX was available)
+if __name__ == '__main__':
+    # This block is for illustrative testing and requires a mock FLUX setup or actual FLUX.
+    # It won't run correctly without FLUX and proper data.
+    print("ZEN Predictor module - Standalone Test (Illustrative)")
+
+    # Mock data for testing
+    mock_market_data_list = []
+    for i in range(10):
+        mock_market_data_list.append({
+            'timestamp': pd.Timestamp('2023-01-01') + pd.Timedelta(days=i),
+            'open': 100 + i,
+            'high': 105 + i,
+            'low': 98 + i,
+            'close': 102 + i,
+            'volume': 1000 + i * 100
+        })
+    mock_current_data = pd.DataFrame(mock_market_data_list)
+    
+    mock_summary_stats = pd.Series({
+        ('close', 'mean'): 105.0, ('close', 'median'): 105.0, ('close', 'std'): 3.0,
+        ('volume', 'mean'): 1500.0, ('volume', 'sum'): 15000,
+        'total_period_return': 0.05
+    })
+    mock_base_prompt = "Visualize market energy for short-term Bitcoin price action."
+    
+    # Mock FLUX pipeline and model_config
+    class MockFluxPipe:
+        def __call__(self, *args, **kwargs): # Make it callable if flux_generate_func expects that
+            print("MockFluxPipe called (simulating __call__ if generate uses it directly)")
+            img = Image.new('RGB', (100, 100), color = 'red') # Dummy image
+            return [img] # Expected output format
+
+    mock_pipe_instance = MockFluxPipe()
+    
+    # Mock flux_generate_func if not imported
+    if flux_generate_func is None:
+        def mock_flux_generate(pipe, prompt, neg_prompt, h, w, steps, scale, seed_val):
+            print(f"Mock flux_generate_func called with prompt: {prompt}")
+            # Simulate image generation based on prompt keywords for varied testing
+            if "upward" in prompt or "positive" in prompt:
+                # Brighter image for "upward"
+                avg_color = int(255 * 0.75) # Brighter
+            elif "downward" in prompt or "negative" in prompt:
+                # Darker image for "downward"
+                avg_color = int(255 * 0.25) # Darker
+            else:
+                # Neutral image
+                avg_color = int(255 * 0.5) # Medium gray
+            
+            img = Image.new('L', (h, w), color=avg_color)
+            return [img]
+        flux_generate_func = mock_flux_generate
+
+
+    mock_model_cfg = {"height": 64, "width": 64, "num_inference_steps": 1, "guidance_scale": 1.0, "seed": 42}
+    mock_strategy_p = {"asset": "BTC/USD", "timeframe": "1h"}
+
+    print(f"Is flux_generate_func available? {'Yes' if flux_generate_func else 'No'}")
+    print(f"Is mock_pipe_instance available? {'Yes' if mock_pipe_instance else 'No'}")
+
+
+    # Test construct_prompt_for_zen
+    test_prompt = construct_prompt_for_zen(mock_current_data.iloc[-5:], mock_summary_stats, mock_base_prompt, mock_strategy_p)
+    print(f"Test Prompt: {test_prompt}")
+
+    # Test analyze_zen_image_to_signal
+    bright_image = Image.new('L', (64,64), color=200) # Bright
+    dark_image = Image.new('L', (64,64), color=50) # Dark
+    print(f"Analysis of bright image (expected positive): {analyze_zen_image_to_signal(bright_image):.4f}")
+    print(f"Analysis of dark image (expected negative): {analyze_zen_image_to_signal(dark_image):.4f}")
+    print(f"Analysis of None image (expected 0.0): {analyze_zen_image_to_signal(None):.4f}")
+
+
+    # Test get_zen_signal
+    # Note: This test will use the mock flux_generate_func if the real one isn't found.
+    # The mock_pipe_instance is passed as flux_pipe.
+    if flux_generate_func and mock_pipe_instance:
+        print("\nTesting get_zen_signal:")
+        signal = get_zen_signal(
+            current_market_data=mock_current_data.iloc[-5:], # last 5 rows as current slice
+            historical_data_summary=mock_summary_stats,
+            base_prompt=mock_base_prompt + " positive outlook", # to influence mock image
+            flux_pipe=mock_pipe_instance, 
+            model_config=mock_model_cfg,
+            strategy_params=mock_strategy_p
+        )
+        print(f"Generated ZEN Signal (positive prompt): {signal:.4f}")
+
+        signal_neg = get_zen_signal(
+            current_market_data=mock_current_data.iloc[-5:],
+            historical_data_summary=mock_summary_stats,
+            base_prompt=mock_base_prompt + " strong downward pressure", # to influence mock image
+            flux_pipe=mock_pipe_instance,
+            model_config=mock_model_cfg,
+            strategy_params=mock_strategy_p
+        )
+        print(f"Generated ZEN Signal (negative prompt): {signal_neg:.4f}")
+    else:
+        print("\nSkipping get_zen_signal test as flux_generate_func or mock_pipe_instance is not available.")
+
+    # Example of initializing the global pipeline (though not used by get_zen_signal directly)
+    # initialize_zen_predictor(mock_pipe_instance)
+    # print(f"Global _pipeline set: {_pipeline is not None}")

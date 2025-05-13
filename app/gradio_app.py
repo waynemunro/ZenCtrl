@@ -15,6 +15,17 @@ from flux.condition import Condition
 from flux.generate import generate
 from flux.lora_controller import set_lora_scale
 
+# Imports for ZEN Backtester
+import pandas as pd
+import ast
+import numpy as np
+from trading_logic.lenia_ooda_strategy import DEFAULT_PARAMS as LOS_DEFAULT_PARAMS
+from trading_logic.lenia_ooda_strategy import fetch_data as los_fetch_data
+from trading_logic.lenia_ooda_strategy import load_optimized_parameters as los_load_optimized_parameters
+from trading_logic.lenia_ooda_strategy import run_simulation as los_run_simulation
+from binance.client import Client as BinanceClient
+from app.zen_predictor import get_zen_signal
+
 pipe = None
 use_int8 = False
 model_config = { "union_cond_attn": True, "add_cond_attn": False, "latent_lora": False, "independent_condition": False}
@@ -147,37 +158,286 @@ def get_samples():
             "text": "A man sitting in a yellow chair drinking a cup of coffee",
         }
     ]
-    return [[Image.open(sample["image"]), sample["text"]] for sample in sample_list]
+    processed_samples = []
+    for sample in sample_list:
+        try:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.join(base_dir, '..')
+            image_path = os.path.join(project_root, sample["image"])
+            
+            if not os.path.exists(image_path):
+                print(f"Warning: Sample image not found at {image_path}")
+                if os.path.exists(sample["image"]):
+                    image_path = sample["image"]
+                else:
+                    continue
+
+            processed_samples.append([Image.open(image_path), sample["text"]])
+        except Exception as e:
+            print(f"Error loading sample image {sample.get('image', 'N/A')}: {e}")
+            
+    if not processed_samples:
+        print("Warning: No samples loaded. Using a placeholder example.")
+        try:
+            dummy_image = Image.new('RGB', (100, 100), color = 'red')
+            return [[dummy_image, "Placeholder if no samples load."]]
+        except Exception:
+            return [["Placeholder text if image creation fails."]]
+            
+    return processed_samples
 
 
-demo = gr.Interface(
-    fn=process_image_and_text,
-    inputs=[
-        gr.Image(type="pil"),
-        gr.Textbox(lines=2),
-        gr.Slider(minimum=2, maximum=28, value=2, label="steps"),
-        gr.Slider(minimum=0, maximum=2.0, value=1.0, label="strength_sub"),
-        gr.Slider(minimum=0, maximum=2.0, value=1.0, label="strength_spat"),
-        gr.Slider(minimum=512, maximum=2048, value=1024, label="size"),
-    ],
-    outputs=gr.Gallery(
-                label="Outputs", show_label=False, elem_id="gallery",
-                columns=[3], rows=[1], object_fit="contain", height="auto"
-            ),
-    title="ZenCtrl / Subject driven generation",
-    examples=get_samples(),
-)
+def run_zen_backtest_callback(symbol, timeframe, ema_period, atr_period, atr_multiplier, 
+                              momentum_period, rsi_period, rsi_oversold, rsi_overbought,
+                              lenia_r, lenia_t, lenia_b_str, lenia_m, lenia_s, 
+                              lookback_candles, trade_amount_usd,
+                              optimization_log_file, 
+                              enable_zen, zen_signal_weight, base_prompt_zen, zen_prediction_frequency):
+    
+    print("Run ZEN-Augmented Backtest button clicked.")
+    
+    strategy_params = LOS_DEFAULT_PARAMS.copy()
+
+    ui_params = {
+        'symbol': symbol,
+        'timeframe': timeframe,
+        'ema_period': int(ema_period),
+        'atr_period': int(atr_period),
+        'atr_multiplier': float(atr_multiplier),
+        'momentum_period': int(momentum_period),
+        'rsi_period': int(rsi_period),
+        'rsi_oversold': float(rsi_oversold),
+        'rsi_overbought': float(rsi_overbought),
+        'lenia_r': int(lenia_r),
+        'lenia_t': int(lenia_t),
+        'lenia_m': float(lenia_m),
+        'lenia_s': float(lenia_s),
+        'lookback_candles': int(lookback_candles),
+        'trade_amount_usd': float(trade_amount_usd)
+    }
+
+    try:
+        lenia_b_list = ast.literal_eval(lenia_b_str)
+        if not isinstance(lenia_b_list, list) or not all(isinstance(item, (float, int)) for item in lenia_b_list):
+            raise ValueError("Lenia B must be a list of numbers.")
+        ui_params['lenia_b'] = lenia_b_list
+    except Exception as e:
+        error_message = f"Error parsing Lenia B: {e}. Using default: {strategy_params['lenia_b']}"
+        print(error_message)
+        ui_params['lenia_b'] = strategy_params['lenia_b']
+
+    strategy_params.update(ui_params)
+
+    if optimization_log_file is not None:
+        try:
+            print(f"Attempting to load parameters from uploaded file: {optimization_log_file.name}")
+            loaded_opt_params = los_load_optimized_parameters(optimization_log_file.name, symbol, timeframe)
+            if loaded_opt_params:
+                strategy_params.update(loaded_opt_params)
+                print("Successfully loaded and merged parameters from optimization log.")
+            else:
+                print("No specific parameters found in log for symbol/timeframe, or log was empty. Using UI/default parameters.")
+        except Exception as e:
+            print(f"Error loading from optimization log: {e}. Using UI/default parameters.")
+    
+    print(f"Final Strategy Parameters: {strategy_params}")
+
+    num_simulation_candles = 200
+    total_candles_to_fetch = strategy_params['lookback_candles'] + num_simulation_candles
+    
+    print(f"Fetching {total_candles_to_fetch} candles for {strategy_params['symbol']} ({strategy_params['timeframe']})...")
+    historical_data = los_fetch_data(strategy_params['symbol'], strategy_params['timeframe'], total_candles_to_fetch)
+
+    if historical_data.empty or len(historical_data) < strategy_params['lookback_candles']:
+        error_msg = "Failed to fetch sufficient historical data for backtesting."
+        print(error_msg)
+        return error_msg, None, error_msg, error_msg
+
+    print(f"Fetched {len(historical_data)} data points.")
+
+    actual_zen_predictor_func = None
+    if enable_zen:
+        def zen_predictor_function_for_backtest(current_candle_data):
+            print(f"Calling actual get_zen_signal for candle: {current_candle_data.name}")
+            return get_zen_signal(
+                current_market_data=current_candle_data, 
+                base_prompt=base_prompt_zen,
+                flux_pipe=pipe,
+                model_config=model_config
+            )
+        actual_zen_predictor_func = zen_predictor_function_for_backtest
+        print("ZEN augmentation enabled. ZEN predictor function is set.")
+
+    print("Starting simulation...")
+    initial_balance = 10000
+    trades_df, final_value, pnl = los_run_simulation(
+        df=historical_data,
+        params=strategy_params,
+        initial_balance_usd=initial_balance,
+        zen_signal_enabled=enable_zen,
+        zen_weight=float(zen_signal_weight) if enable_zen else 0.0,
+        zen_predictor_func=actual_zen_predictor_func if enable_zen else None,
+        zen_prediction_frequency=int(zen_prediction_frequency) if enable_zen else 1
+    )
+    print("Simulation finished.")
+
+    trade_log_output_str = "No trades executed." 
+    if trades_df is not None and not trades_df.empty:
+        trade_log_output_str = trades_df.to_markdown(index=False)
+    
+    pnl_chart_data = None
+    if trades_df is not None and not trades_df.empty:
+        cumulative_pnl = trades_df[trades_df['action'] == 'SELL']['profit_usd'].cumsum()
+        if not cumulative_pnl.empty:
+            plot_df = pd.DataFrame({
+                'Trade Number': range(1, len(cumulative_pnl) + 1),
+                'Cumulative P&L (USD)': cumulative_pnl.values
+            })
+            pnl_chart_data = plot_df
+            print("P&L chart data prepared.")
+        else:
+            print("No SELL trades to plot P&L.")
+    else:
+        print("No trades data for P&L chart.")
+
+    num_trades = 0
+    win_rate = 0.0
+    total_profit_usd = pnl
+    max_drawdown = "N/A"
+
+    if trades_df is not None and not trades_df.empty:
+        sell_trades = trades_df[trades_df['action'] == 'SELL']
+        num_trades = len(sell_trades)
+        if num_trades > 0:
+            winning_trades = sell_trades[sell_trades['profit_usd'] > 0]
+            win_rate = (len(winning_trades) / num_trades) * 100 if num_trades > 0 else 0
+    
+    key_metrics_str = f"Total P&L: {total_profit_usd:.2f} USD\n"
+    key_metrics_str += f"Number of Trades (Sells): {num_trades}\n"
+    key_metrics_str += f"Win Rate: {win_rate:.2f}%\n"
+    key_metrics_str += f"Max Drawdown: {max_drawdown}"
+    print(f"Key Metrics: {key_metrics_str}")
+
+    zen_insights_str = "ZEN Insights: Not yet implemented. Will show ZEN images/signals here."
+    if enable_zen and trades_df is not None and not trades_df.empty and 'active_zen_signal' in trades_df.columns:
+        zen_insights_str = "ZEN Signals recorded in Trade Log (see 'active_zen_signal' column).\n"
+
+    return trade_log_output_str, pnl_chart_data, key_metrics_str, zen_insights_str
+
+with gr.Blocks() as demo:
+    gr.Markdown("# ZenCtrl: Generative Backtesting & Visualization")
+    with gr.Tab("ZEN Image Generation"):
+        gr.Markdown("## Subject-Driven Image Generation with FLUX")
+        with gr.Row():
+            with gr.Column():
+                img_input = gr.Image(type="pil", label="Input Image")
+                text_input = gr.Textbox(lines=2, label="Prompt")
+                with gr.Accordion("Advanced Options", open=False):
+                    steps_input = gr.Slider(minimum=2, maximum=28, value=8, step=1, label="Inference Steps")
+                    strength_sub_input = gr.Slider(minimum=0, maximum=2.0, value=1.0, label="Subject Strength (Condition Scale Subject)")
+                    strength_spat_input = gr.Slider(minimum=0, maximum=2.0, value=1.0, label="Spatial Strength (Condition Scale Spatial)")
+                    size_input = gr.Slider(minimum=512, maximum=2048, step=256, value=1024, label="Size (Height/Width)")
+                generate_button = gr.Button("Generate Image")
+            with gr.Column():
+                gallery_output = gr.Gallery(
+                    label="Outputs", show_label=False, elem_id="gallery",
+                    columns=[3], rows=[1], object_fit="contain", height="auto"
+                )
+        
+        generate_button.click(
+            fn=process_image_and_text,
+            inputs=[img_input, text_input, steps_input, strength_sub_input, strength_spat_input, size_input],
+            outputs=gallery_output
+        )
+        gr.Examples(
+            examples=get_samples(),
+            inputs=[img_input, text_input],
+            label="Example Prompts & Images"
+        )
+
+    with gr.Tab("ZEN Backtester"):
+        gr.Markdown("## LeniaOODA Strategy Backtester with ZEN Predictive Augmentation")
+        
+        with gr.Row():
+            with gr.Column(scale=1):
+                gr.Markdown("### Strategy Parameters (LeniaOODA)")
+                symbol_input = gr.Textbox(label="Symbol (e.g., BTCUSDT)", value=LOS_DEFAULT_PARAMS['symbol'])
+                
+                timeframe_choices = [
+                    ("1 minute", BinanceClient.KLINE_INTERVAL_1MINUTE),
+                    ("3 minutes", BinanceClient.KLINE_INTERVAL_3MINUTE),
+                    ("5 minutes", BinanceClient.KLINE_INTERVAL_5MINUTE),
+                    ("15 minutes", BinanceClient.KLINE_INTERVAL_15MINUTE),
+                    ("30 minutes", BinanceClient.KLINE_INTERVAL_30MINUTE),
+                    ("1 hour", BinanceClient.KLINE_INTERVAL_1HOUR),
+                    ("2 hours", BinanceClient.KLINE_INTERVAL_2HOUR),
+                    ("4 hours", BinanceClient.KLINE_INTERVAL_4HOUR),
+                    ("6 hours", BinanceClient.KLINE_INTERVAL_6HOUR),
+                    ("12 hours", BinanceClient.KLINE_INTERVAL_12HOUR),
+                    ("1 day", BinanceClient.KLINE_INTERVAL_1DAY),
+                ]
+                timeframe_input = gr.Dropdown(label="Timeframe", choices=timeframe_choices, value=LOS_DEFAULT_PARAMS['timeframe'])
+                
+                ema_period_input = gr.Number(label="EMA Period", value=LOS_DEFAULT_PARAMS['ema_period'])
+                atr_period_input = gr.Number(label="ATR Period", value=LOS_DEFAULT_PARAMS['atr_period'])
+                atr_multiplier_input = gr.Number(label="ATR Multiplier", value=LOS_DEFAULT_PARAMS['atr_multiplier'])
+                momentum_period_input = gr.Number(label="Momentum Period", value=LOS_DEFAULT_PARAMS['momentum_period'])
+                rsi_period_input = gr.Number(label="RSI Period", value=LOS_DEFAULT_PARAMS['rsi_period'])
+                rsi_oversold_input = gr.Number(label="RSI Oversold", value=LOS_DEFAULT_PARAMS['rsi_oversold'])
+                rsi_overbought_input = gr.Number(label="RSI Overbought", value=LOS_DEFAULT_PARAMS['rsi_overbought'])
+
+                gr.Markdown("#### Lenia Parameters")
+                lenia_r_input = gr.Number(label="Lenia R", value=LOS_DEFAULT_PARAMS['lenia_r'])
+                lenia_t_input = gr.Number(label="Lenia T", value=LOS_DEFAULT_PARAMS['lenia_t'])
+                lenia_b_input_str = gr.Textbox(label="Lenia B (e.g., [0.1, 0.2, 0.3])", value=str(LOS_DEFAULT_PARAMS['lenia_b']))
+                lenia_m_input = gr.Number(label="Lenia M", value=LOS_DEFAULT_PARAMS['lenia_m'])
+                lenia_s_input = gr.Number(label="Lenia S", value=LOS_DEFAULT_PARAMS['lenia_s'])
+                
+                lookback_candles_input = gr.Number(label="Lookback Candles (for indicator init)", value=LOS_DEFAULT_PARAMS['lookback_candles'])
+                trade_amount_usd_input = gr.Number(label="Trade Amount (USD)", value=LOS_DEFAULT_PARAMS['trade_amount_usd'])
+
+                gr.Markdown("### Parameter Loading")
+                optimization_log_upload = gr.File(label="Upload Optimization Log CSV (Optional)", file_types=['.csv'])
+
+            with gr.Column(scale=1):
+                gr.Markdown("### ZEN Integration Controls")
+                enable_zen_checkbox = gr.Checkbox(label="Enable ZEN Predictive Augmentation", value=False)
+                zen_signal_weight_slider = gr.Slider(minimum=0.0, maximum=2.0, step=0.05, label="ZEN Signal Weight", value=0.5)
+                base_prompt_zen_textbox = gr.Textbox(label="Base Prompt for ZEN", lines=3, placeholder="e.g., Market sentiment based on recent price action:")
+                zen_prediction_frequency_input = gr.Number(label="ZEN Prediction Frequency (every N candles)", value=10, minimum=1, step=1)
+                
+                run_backtest_button = gr.Button("Run ZEN-Augmented Backtest")
+
+        with gr.Row():
+            with gr.Column():
+                gr.Markdown("### Backtest Results")
+                trade_log_output = gr.Textbox(label="Trade Log", lines=10, interactive=False)
+                key_metrics_output = gr.Textbox(label="Key Metrics", lines=5, interactive=False)
+            with gr.Column():
+                pnl_chart_output = gr.Plot(label="P&L Chart")
+                zen_insights_output = gr.Textbox(label="ZEN Insights/Images (Placeholder)", lines=5, interactive=False)
+
+        backtest_inputs = [
+            symbol_input, timeframe_input, ema_period_input, atr_period_input, atr_multiplier_input,
+            momentum_period_input, rsi_period_input, rsi_oversold_input, rsi_overbought_input,
+            lenia_r_input, lenia_t_input, lenia_b_input_str, lenia_m_input, lenia_s_input,
+            lookback_candles_input, trade_amount_usd_input,
+            optimization_log_upload,
+            enable_zen_checkbox, zen_signal_weight_slider, base_prompt_zen_textbox, zen_prediction_frequency_input
+        ]
+        backtest_outputs = [trade_log_output, pnl_chart_output, key_metrics_output, zen_insights_output]
+
+        run_backtest_button.click(
+            fn=run_zen_backtest_callback,
+            inputs=backtest_inputs,
+            outputs=backtest_outputs
+        )
 
 if __name__ == "__main__":
     import debugpy
     debugpy.listen(("0.0.0.0", 5678))
     print("debugpy is listening on port 5678. Attach your debugger now.")
-    # Uncomment the next line if you want the script to wait until a debugger is attached.
-    # debugpy.wait_for_client() 
-    # print("Debugger attached.")
-
     init_pipeline()
     demo.launch(
-        debug=True, # This is Gradio's own debug mode, separate from Python debugger
-        # share=True
+        debug=True,
     )
