@@ -59,8 +59,7 @@ def init_pipeline():
             use_safetensors=True,         # Use safetensors
             low_cpu_mem_usage=True,
             device_map="auto",            # Automatically map model to available devices
-            offload_folder=offload_folder,
-            offload_state_dict=True       # Explicitly enable offloading
+            offload_folder=offload_folder # offload_state_dict=True removed
         )
         pipe = FluxPipeline.from_pretrained(
             "black-forest-labs/FLUX.1-schnell",
@@ -69,8 +68,7 @@ def init_pipeline():
             use_safetensors=True,         # Use safetensors for other components
             low_cpu_mem_usage=True,
             device_map="auto",            # Automatically map model to available devices
-            offload_folder=offload_folder,
-            offload_state_dict=True       # Explicitly enable offloading
+            offload_folder=offload_folder # offload_state_dict=True removed
         )
         print(f"Pipeline initialized. Target device (from first component, e.g., transformer): {pipe.device if pipe else 'N/A'}")
 
@@ -91,8 +89,7 @@ def init_pipeline():
                 use_safetensors=True,         # Use safetensors for CPU fallback
                 low_cpu_mem_usage=True,       # Still useful for CPU
                 device_map="cpu",             # Explicitly map to CPU
-                offload_folder=offload_folder, # Still useful for managing shards even on CPU
-                offload_state_dict=True        # Explicitly enable offloading
+                offload_folder=offload_folder # offload_state_dict=True removed
             )
             print(f"Pipeline initialized on CPU. Target device: {pipe.device if pipe else 'N/A'}")
         except Exception as cpu_e:
@@ -371,7 +368,7 @@ def run_zen_backtest_callback(symbol, timeframe, ema_period, atr_period, atr_mul
             
         actual_zen_predictor_func = zen_predictor_wrapper_for_simulation
         print("ZEN augmentation enabled. ZEN predictor function is set.")
-    elif enable_zen and pipe is None:
+    elif enable_zen:
         print("ZEN was enabled, but pipeline failed to initialize. Proceeding without ZEN.")
 
     print("Starting simulation...")

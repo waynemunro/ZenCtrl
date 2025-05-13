@@ -1,0 +1,49 @@
+graph TD
+    A[Define/Refine Strategic Objective: Windfall via Gamified Strategy Execution] --> B{User Prompt / Input};
+    B --> C{Copilot: Understand & Plan};
+    C --> C1[Consult PLAN.md];
+    C --> C2[Consult COPILOT_OPERATING_INSTRUCTIONS.md];
+    C --> C3[Gather Context: Read Files, Search Code];
+    C1 --> D;
+    C2 --> D;
+    C3 --> D{Copilot: Take Action};
+
+    D --> D1[Generate Code / Refactor];
+    D --> D2[Create/Update Files];
+    D --> D3[Update Living Documentation: PLAN.md, DEVELOPMENT_LOG.md];
+
+    D1 --> E{Verification};
+    D2 --> E;
+    D3 --> E;
+
+    E --> E1[Run Code / Tests];
+    E --> E2[User Review & Feedback];
+
+    E1 --> F{Outcome Assessment};
+    E2 --> F;
+
+    F -- Successful --> G[Version Control - Git Commit];
+    G --> H{Continue to Next Task / Iterate};
+    H -- Next Task from PLAN.md / New User Prompt --> B;
+
+    F -- Needs Revision/Refinement --> C;
+
+    subgraph "Guiding Principles"
+        P1[Iterative Development]
+        P2[SOLID Principles]
+        P3[Code Integrity]
+        P4[Adherence to Standards]
+    end
+
+    A -.-> P1;
+    A -.-> P2;
+    A -.-> P3;
+    A -.-> P4;
+    D -.-> P1;
+    D -.-> P2;
+    D -.-> P3;
+    D -.-> P4;
+
+    style A fill:#f9f,stroke:#333,stroke-width:2px
+    style B fill:#ccf,stroke:#333,stroke-width:2px
+    style H fill:#ccf,stroke:#333,stroke-width:2px

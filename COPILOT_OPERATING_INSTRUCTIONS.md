@@ -7,6 +7,7 @@ This document outlines the operating principles for GitHub Copilot in the ZenCtr
 1. **Strategic Objective: Windfall through Gamified Strategy Execution:**
    * The ultimate aim is to achieve a significant "windfall" by discovering, developing, and deploying novel strategies.
    * These strategies will be conceptualized through the lens of game theory, where the system and its components ("agents") are actors performing on a metaphorical "octagon stage."
+   * The octagon stage must function as a panopticon for the observation of the performing actors by the agents, enabling comprehensive monitoring and strategic decision-making.
    * Development will focus on creating a gamified environment where strategies evolve to overcome "unnecessary obstacles" and "boss levels," representing market challenges or inefficiencies.
    * Copilot's suggestions and implementations should align with this narrative, fostering the creation of adaptive, intelligent agents and systems that can identify and capitalize on such strategic opportunities.
 
