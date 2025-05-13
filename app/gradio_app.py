@@ -228,6 +228,10 @@ def run_zen_backtest_callback(symbol, timeframe, ema_period, atr_period, atr_mul
 
     strategy_params.update(ui_params)
 
+    # Initialize Binance client for fetching data - API keys from env for now
+    binance_client = BinanceClient(os.getenv('BINANCE_API_KEY'), os.getenv('BINANCE_API_SECRET'))
+
+
     if optimization_log_file is not None:
         try:
             print(f"Attempting to load parameters from uploaded file: {optimization_log_file.name}")
@@ -242,11 +246,11 @@ def run_zen_backtest_callback(symbol, timeframe, ema_period, atr_period, atr_mul
     
     print(f"Final Strategy Parameters: {strategy_params}")
 
-    num_simulation_candles = 200
-    total_candles_to_fetch = strategy_params['lookback_candles'] + num_simulation_candles
+    candles_for_simulation_run = 500
+    total_candles_to_fetch = strategy_params['lookback_candles'] + candles_for_simulation_run
     
     print(f"Fetching {total_candles_to_fetch} candles for {strategy_params['symbol']} ({strategy_params['timeframe']})...")
-    historical_data = los_fetch_data(strategy_params['symbol'], strategy_params['timeframe'], total_candles_to_fetch)
+    historical_data = los_fetch_data(binance_client, strategy_params['symbol'], strategy_params['timeframe'], total_candles_to_fetch)
 
     if historical_data.empty or len(historical_data) < strategy_params['lookback_candles']:
         error_msg = "Failed to fetch sufficient historical data for backtesting."
@@ -255,18 +259,50 @@ def run_zen_backtest_callback(symbol, timeframe, ema_period, atr_period, atr_mul
 
     print(f"Fetched {len(historical_data)} data points.")
 
+    historical_data_summary_for_zen = pd.Series(dtype=object)
+    if not historical_data.empty:
+        summary_agg = historical_data.agg({
+            'close': ['mean', 'median', 'std'],
+            'volume': ['mean', 'sum']
+        }).unstack()
+        if not summary_agg.empty:
+            summary_agg.index = ['_'.join(map(str,col)).strip() for col in summary_agg.index.values]
+            historical_data_summary_for_zen = summary_agg.copy()
+
+        if len(historical_data['close']) > 0:
+            total_return = (historical_data['close'].iloc[-1] / historical_data['close'].iloc[0] - 1) if len(historical_data['close']) > 1 else 0.0
+            historical_data_summary_for_zen['total_period_return'] = total_return
+        else:
+            historical_data_summary_for_zen['total_period_return'] = 0.0
+
     actual_zen_predictor_func = None
     if enable_zen:
-        def zen_predictor_function_for_backtest(current_candle_data):
-            print(f"Calling actual get_zen_signal for candle: {current_candle_data.name}")
+        if pipe is None:
+            print("ZEN enabled, but pipeline not initialized. Attempting to initialize now.")
+            init_pipeline()
+            if pipe is None:
+                print("Failed to initialize pipeline for ZEN. ZEN augmentation will be skipped.")
+                enable_zen = False
+
+    if enable_zen and pipe is not None:
+        def zen_predictor_wrapper_for_simulation(simulation_df, current_idx):
+            slice_size = 5
+            start_slice_idx = max(0, current_idx - slice_size + 1)
+            current_market_data_slice = simulation_df.iloc[start_slice_idx : current_idx + 1]
+
+            print(f"Calling actual get_zen_signal for candle at index: {current_idx}, timestamp: {simulation_df.index[current_idx]}")
             return get_zen_signal(
-                current_market_data=current_candle_data, 
+                current_market_data=current_market_data_slice, 
+                historical_data_summary=historical_data_summary_for_zen, 
                 base_prompt=base_prompt_zen,
-                flux_pipe=pipe,
-                model_config=model_config
+                flux_pipe=pipe, 
+                model_config=model_config, 
+                strategy_params=strategy_params 
             )
-        actual_zen_predictor_func = zen_predictor_function_for_backtest
+        actual_zen_predictor_func = zen_predictor_wrapper_for_simulation
         print("ZEN augmentation enabled. ZEN predictor function is set.")
+    elif enable_zen and pipe is None:
+        print("ZEN was enabled, but pipeline failed to initialize. Proceeding without ZEN.")
 
     print("Starting simulation...")
     initial_balance = 10000
@@ -274,10 +310,11 @@ def run_zen_backtest_callback(symbol, timeframe, ema_period, atr_period, atr_mul
         df=historical_data,
         params=strategy_params,
         initial_balance_usd=initial_balance,
-        zen_signal_enabled=enable_zen,
-        zen_weight=float(zen_signal_weight) if enable_zen else 0.0,
-        zen_predictor_func=actual_zen_predictor_func if enable_zen else None,
-        zen_prediction_frequency=int(zen_prediction_frequency) if enable_zen else 1
+        zen_signal_enabled=enable_zen and pipe is not None,
+        zen_weight=float(zen_signal_weight) if enable_zen and pipe is not None else 0.0,
+        zen_predictor_func=actual_zen_predictor_func if enable_zen and pipe is not None else None,
+        zen_prediction_frequency=int(zen_prediction_frequency) if enable_zen and pipe is not None else 1,
+        binance_client=binance_client
     )
     print("Simulation finished.")
 

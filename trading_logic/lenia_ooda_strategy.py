@@ -10,16 +10,19 @@ import time
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Configuration ---
-API_KEY = os.getenv('BINANCE_API_KEY', "YOUR_API_KEY")
-API_SECRET = os.getenv('BINANCE_API_SECRET', "YOUR_API_SECRET")
-client = Client(API_KEY, API_SECRET)
+# --- Configuration Constants (can be overridden by passed-in params) ---
+DEFAULT_OPTIMIZATION_LOG_CSV = 'optimization_log.csv'
 
-# Optimization Log CSV Path - adjust as needed
-OPTIMIZATION_LOG_CSV = 'optimization_log.csv' # Expects this in the same directory or provide full path
+# --- Binance Client Initialization ---
+def initialize_binance_client(api_key=None, api_secret=None):
+    """Initializes and returns a Binance client."""
+    key = api_key or os.getenv('BINANCE_API_KEY')
+    secret = api_secret or os.getenv('BINANCE_API_SECRET')
+    if not key or not secret:
+        logging.warning("Binance API key or secret not provided or found in environment variables. Client may not work for live operations.")
+    return Client(key, secret)
 
 # --- Lenia OODA Parameters (Example - these should be optimized) ---
-# These are just placeholders; actual parameters will be loaded from optimization_log.csv
 DEFAULT_PARAMS = {
     'symbol': 'BTCUSDT',
     'timeframe': Client.KLINE_INTERVAL_15MINUTE,
@@ -64,7 +67,7 @@ def noyau_g(R, n=1):
     return K, K.T # Simplified for conceptual use
 
 # --- Data Fetching and Preparation ---
-def fetch_data(symbol, timeframe, lookback_candles):
+def fetch_data(binance_client, symbol, timeframe, lookback_candles):
     logging.info(f"Fetching {lookback_candles} candles for {symbol} on {timeframe} timeframe.")
     if lookback_candles > 1000:
         logging.warning("lookback_candles > 1000, fetching only last 1000 due to API limit. Implement pagination for more.")
@@ -73,7 +76,7 @@ def fetch_data(symbol, timeframe, lookback_candles):
         limit = lookback_candles
 
     try:
-        klines = client.get_klines(symbol=symbol, interval=timeframe, limit=limit)
+        klines = binance_client.get_klines(symbol=symbol, interval=timeframe, limit=limit)
         df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
                                            'close_time', 'quote_asset_volume', 'number_of_trades', 
                                            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
@@ -150,7 +153,8 @@ def ooda_loop_decision(df_point, params, zen_signal=0.0, zen_weight=0.0): # Adde
 # --- Backtesting/Simulation Engine ---
 def run_simulation(df, params, initial_balance_usd=10000, 
                    zen_signal_enabled=False, zen_weight=0.0, 
-                   zen_predictor_func=None, zen_prediction_frequency=1): # Added ZEN parameters
+                   zen_predictor_func=None, zen_prediction_frequency=1,
+                   binance_client=None): 
     logging.info("Starting simulation...")
     balance_usd = initial_balance_usd
     position_asset = 0
@@ -169,8 +173,9 @@ def run_simulation(df, params, initial_balance_usd=10000,
         
         if zen_signal_enabled and zen_predictor_func is not None:
             if (i - (params['lookback_candles'] -1)) % zen_prediction_frequency == 0:
-                market_context_for_zen = current_point 
-                current_zen_signal = zen_predictor_func(market_context_for_zen) 
+                # Pass the entire df_with_indicators and the current index i
+                # The zen_predictor_func (wrapper in gradio_app) will handle slicing.
+                current_zen_signal = zen_predictor_func(df_with_indicators, i) 
                 logging.info(f"ZEN signal generated at step {i}: {current_zen_signal}")
 
         action, consensus, signals = ooda_loop_decision(current_point, params, 
@@ -219,14 +224,14 @@ def run_simulation(df, params, initial_balance_usd=10000,
     return pd.DataFrame(trades_log), final_portfolio_value, profit_or_loss
 
 # --- Parameter Optimization (Conceptual) ---
-def load_optimized_parameters(csv_path, symbol, timeframe_str):
+def load_optimized_parameters(csv_path, symbol, timeframe_str, default_params_dict):
     try:
         df_opt = pd.read_csv(csv_path)
         filtered_params = df_opt[(df_opt['symbol'] == symbol) & (df_opt['timeframe'] == timeframe_str)]
         
         if filtered_params.empty:
             logging.warning(f"No optimized parameters found for {symbol} on {timeframe_str} in {csv_path}. Using default.")
-            return None
+            return default_params_dict.copy()
             
         score_column_name = 'profit_usd'
         if score_column_name not in filtered_params.columns:
@@ -253,21 +258,26 @@ def load_optimized_parameters(csv_path, symbol, timeframe_str):
                 best_params_dict['lenia_b'] = ast.literal_eval(best_params_dict['lenia_b'])
             except (ValueError, SyntaxError):
                 logging.error(f"Could not parse 'lenia_b' string: {best_params_dict['lenia_b']}. Using default.")
-                best_params_dict['lenia_b'] = DEFAULT_PARAMS['lenia_b']
+                best_params_dict['lenia_b'] = default_params_dict['lenia_b']
 
-        logging.info(f"Loaded optimized parameters for {symbol} ({timeframe_str}): {best_params_dict}")
-        return best_params_dict
+        final_params = default_params_dict.copy()
+        final_params.update(best_params_dict)
+
+        logging.info(f"Loaded and merged optimized parameters for {symbol} ({timeframe_str}): {final_params}")
+        return final_params
         
     except FileNotFoundError:
         logging.warning(f"Optimization log CSV '{csv_path}' not found. Using default parameters.")
-        return None
+        return default_params_dict.copy()
     except Exception as e:
         logging.error(f"Error loading optimized parameters: {e}. Using default parameters.")
-        return None
+        return default_params_dict.copy()
 
 # --- Main Execution ---
 if __name__ == "__main__":
     logging.info("Lenia OODA Strategy Bot - Backtesting Mode")
+
+    client = initialize_binance_client()
 
     timeframe_str_map = {
         Client.KLINE_INTERVAL_1MINUTE: '1m', Client.KLINE_INTERVAL_3MINUTE: '3m',
@@ -282,40 +292,38 @@ if __name__ == "__main__":
     current_timeframe_str = timeframe_str_map.get(DEFAULT_PARAMS['timeframe'], DEFAULT_PARAMS['timeframe'])
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    csv_file_path = os.path.join(script_dir, OPTIMIZATION_LOG_CSV)
+    optimization_log_filename = DEFAULT_OPTIMIZATION_LOG_CSV 
     
-    if not os.path.exists(OPTIMIZATION_LOG_CSV) and not os.path.isabs(OPTIMIZATION_LOG_CSV):
-        effective_csv_path = csv_file_path
+    if os.path.isabs(optimization_log_filename):
+        effective_csv_path = optimization_log_filename
     else:
-        effective_csv_path = OPTIMIZATION_LOG_CSV
+        effective_csv_path = os.path.join(script_dir, optimization_log_filename)
 
     logging.info(f"Attempting to load optimization log from: {effective_csv_path}")
 
     strategy_params = load_optimized_parameters(effective_csv_path, 
                                                 DEFAULT_PARAMS['symbol'], 
-                                                current_timeframe_str)
-    if strategy_params is None:
-        strategy_params = DEFAULT_PARAMS.copy()
-        logging.info("Using default parameters for the simulation.")
-    else:
-        for key, value in DEFAULT_PARAMS.items():
-            if key not in strategy_params:
-                strategy_params[key] = value
-        logging.info("Successfully used loaded/merged parameters for the simulation.")
+                                                current_timeframe_str,
+                                                DEFAULT_PARAMS)
+    logging.info(f"Using parameters for simulation: {strategy_params}")
 
-    historical_data = fetch_data(strategy_params['symbol'], 
+    historical_data = fetch_data(client, 
+                                 strategy_params['symbol'], 
                                  strategy_params['timeframe'], 
                                  strategy_params['lookback_candles'] + 150)
     
-    def placeholder_zen_predictor(market_data):
-        if market_data['close'] > market_data['open']:
+    def placeholder_zen_predictor(market_data, index):
+        if market_data.iloc[index]['close'] > market_data.iloc[index]['open']:
             return 0.5
-        elif market_data['close'] < market_data['open']:
+        elif market_data.iloc[index]['close'] < market_data.iloc[index]['open']:
             return -0.5
         return 0.0
 
     if not historical_data.empty and len(historical_data) > strategy_params['lookback_candles']:
-        trades, final_value, pnl = run_simulation(historical_data, strategy_params, initial_balance_usd=10000)
+        trades, final_value, pnl = run_simulation(historical_data, 
+                                                  strategy_params, 
+                                                  initial_balance_usd=10000,
+                                                  binance_client=client)
         
         logging.info(f"\n--- Simulation Summary for {strategy_params['symbol']} ({current_timeframe_str}) ---")
         logging.info(f"Parameters Used: {strategy_params}")
