@@ -14,13 +14,51 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 DEFAULT_OPTIMIZATION_LOG_CSV = 'optimization_log.csv'
 
 # --- Binance Client Initialization ---
-def initialize_binance_client(api_key=None, api_secret=None):
-    """Initializes and returns a Binance client."""
+def initialize_binance_client(api_key=None, api_secret=None, testnet=False, tld='com', timeout=30):
+    """
+    Initializes and returns a Binance client with improved configuration options.
+    
+    Args:
+        api_key: Binance API key (optional if in env vars)
+        api_secret: Binance API secret (optional if in env vars)
+        testnet: Whether to use the testnet (sandbox) environment
+        tld: Top level domain for the Binance API (com, us, etc.)
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Initialized Binance client or None if initialization fails
+    """
     key = api_key or os.getenv('BINANCE_API_KEY')
     secret = api_secret or os.getenv('BINANCE_API_SECRET')
+    
     if not key or not secret:
-        logging.warning("Binance API key or secret not provided or found in environment variables. Client may not work for live operations.")
-    return Client(key, secret)
+        logging.warning("Binance API key or secret not provided or found in environment variables.")
+        logging.warning("For testing, you can use the testnet with demo API keys.")
+        logging.warning("Visit https://testnet.binance.vision/ to get testnet API keys.")
+    
+    try:
+        client = Client(
+            api_key=key,
+            api_secret=secret,
+            testnet=testnet,
+            tld=tld,
+            timeout=timeout
+        )
+        
+        # Test the connection with a simple request
+        if key and secret:
+            try:
+                account_info = client.get_account()
+                if account_info:
+                    logging.info(f"Successfully connected to Binance API. Account status: {account_info.get('status', 'N/A')}")
+            except Exception as e:
+                logging.warning(f"API connection test failed: {e}")
+                # Continue anyway as the client might still work for public endpoints
+        
+        return client
+    except Exception as e:
+        logging.error(f"Error initializing Binance client: {e}")
+        return None
 
 # --- Lenia OODA Parameters (Example - these should be optimized) ---
 DEFAULT_PARAMS = {
@@ -69,6 +107,15 @@ def noyau_g(R, n=1):
 # --- Data Fetching and Preparation ---
 def fetch_data(binance_client, symbol, timeframe, lookback_candles):
     logging.info(f"Fetching {lookback_candles} candles for {symbol} on {timeframe} timeframe.")
+    
+    # Handle case where client is None (API keys not provided)
+    if binance_client is None:
+        logging.error("Binance client is None! Cannot fetch data. Please provide valid API keys.")
+        # Return empty DataFrame with appropriate structure
+        empty_df = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
+        empty_df.index.name = 'timestamp'
+        return empty_df
+    
     if lookback_candles > 1000:
         logging.warning("lookback_candles > 1000, fetching only last 1000 due to API limit. Implement pagination for more.")
         limit = 1000
@@ -80,7 +127,6 @@ def fetch_data(binance_client, symbol, timeframe, lookback_candles):
         df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
                                            'close_time', 'quote_asset_volume', 'number_of_trades', 
                                            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-        
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.set_index('timestamp', inplace=True)
         for col in ['open', 'high', 'low', 'close', 'volume']:
@@ -90,7 +136,22 @@ def fetch_data(binance_client, symbol, timeframe, lookback_candles):
         return df
     except Exception as e:
         logging.error(f"Error fetching klines for {symbol}: {e}")
-        return pd.DataFrame()
+        # Provide more specific error messages for common issues
+        if "APIError(code=-2015)" in str(e):
+            logging.error("Invalid API keys or authentication failed. Please check your API keys.")
+        elif "APIError(code=-1121)" in str(e):
+            logging.error(f"Invalid symbol: {symbol}. The trading pair may not exist on Binance.")
+        elif "APIError(code=-1003)" in str(e):
+            logging.error("Too many requests. Rate limit exceeded. Please wait and try again.")
+        elif "APIError(code=-1010)" in str(e):
+            logging.error("Insufficient funds or other trading error.")
+        elif "APIError(code=-1022)" in str(e):
+            logging.error("Invalid signature or API key format.")
+            
+        # Return empty DataFrame with appropriate structure
+        empty_df = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
+        empty_df.index.name = 'timestamp'
+        return empty_df
 
 # --- Indicator Calculations ---
 def calculate_indicators(df, params):
@@ -272,6 +333,206 @@ def load_optimized_parameters(csv_path, symbol, timeframe_str, default_params_di
     except Exception as e:
         logging.error(f"Error loading optimized parameters: {e}. Using default parameters.")
         return default_params_dict.copy()
+
+# --- WebSocket Data Streaming for Real-time Trading ---
+# Note: To use WebSocket features, you need to install the websocket-client package:
+# pip install websocket-client python-binance>=1.0.12
+def setup_market_data_stream(binance_client, symbol, callback_function, interval=None):
+    """
+    Sets up a WebSocket connection to stream real-time market data.
+    This is more efficient than polling the REST API for live trading.
+    
+    Args:
+        binance_client: Initialized Binance client
+        symbol: Trading pair symbol (e.g., 'BTCUSDT')
+        callback_function: Function to call when new data is received
+        interval: Optional kline/candlestick interval for kline streams
+        
+    Returns:
+        WebSocket connection object that can be closed with .close()
+    """
+    if binance_client is None:
+        logging.error("Cannot setup WebSocket stream: Binance client is None!")
+        return None
+        
+    try:
+        # Recent versions of Binance API use a different approach for WebSockets
+        # They require using a ThreadedWebsocketManager
+        try:
+            from binance.streams import ThreadedWebsocketManager
+            
+            # Initialize the WebSocket manager
+            twm = ThreadedWebsocketManager(
+                api_key=binance_client.API_KEY,
+                api_secret=binance_client.API_SECRET
+            )
+            
+            # Start the manager
+            twm.start()
+            
+            # Define appropriate stream based on parameters
+            if interval:
+                # Kline/candlestick stream
+                stream_name = f"{symbol.lower()}@kline_{interval}"
+                stream = twm.start_kline_socket(
+                    callback=callback_function,
+                    symbol=symbol.lower(),
+                    interval=interval
+                )
+                logging.info(f"Started kline WebSocket stream for {symbol} ({interval})")
+            else:
+                # Trade stream (individual trades)
+                stream = twm.start_trade_socket(
+                    callback=callback_function,
+                    symbol=symbol.lower()
+                )
+                logging.info(f"Started trade WebSocket stream for {symbol}")
+            
+            return {
+                'stream': stream,
+                'manager': twm
+            }
+            
+        except ImportError:
+            logging.warning("ThreadedWebsocketManager not found. Trying legacy BinanceSocketManager...")
+            # Fallback to legacy approach if ThreadedWebsocketManager is not available
+            from binance.websockets import BinanceSocketManager
+            
+            # Initialize the WebSocket manager
+            bm = BinanceSocketManager(binance_client)
+            
+            # Define appropriate stream based on parameters
+            if interval:
+                # Kline/candlestick stream
+                conn_key = bm.start_kline_socket(
+                    symbol.lower(), 
+                    callback_function,
+                    interval=interval
+                )
+                logging.info(f"Started kline WebSocket stream for {symbol} ({interval})")
+            else:
+                # Trade stream (individual trades)
+                conn_key = bm.start_trade_socket(
+                    symbol.lower(),
+                    callback_function
+                )
+                logging.info(f"Started trade WebSocket stream for {symbol}")
+                
+            # Start the socket manager
+            bm.start()
+            logging.info("WebSocket manager started")
+            
+            return {
+                'connection_key': conn_key,
+                'socket_manager': bm
+            }
+        
+    except Exception as e:
+        logging.error(f"Error setting up WebSocket stream: {e}")
+        if "No such file or directory" in str(e):
+            logging.error("WebSocket dependencies may not be installed. Try 'pip install websocket-client'")
+        return None
+        
+def close_market_data_stream(stream_data):
+    """
+    Closes a WebSocket stream connection.
+    
+    Args:
+        stream_data: The object returned by setup_market_data_stream
+    """
+    if not stream_data:
+        logging.error("Cannot close stream: No stream data provided")
+        return
+        
+    try:
+        # Check if this is a ThreadedWebsocketManager
+        if 'manager' in stream_data:
+            twm = stream_data.get('manager')
+            stream = stream_data.get('stream')
+            
+            if twm and stream:
+                twm.stop_socket(stream)
+                logging.info(f"Stopped WebSocket stream: {stream}")
+                twm.stop()
+                logging.info("Stopped WebSocket manager")
+            else:
+                logging.warning("Invalid stream data, could not close properly")
+                
+        # Otherwise, assume legacy BinanceSocketManager
+        elif 'socket_manager' in stream_data:
+            bm = stream_data.get('socket_manager')
+            conn_key = stream_data.get('connection_key')
+            
+            if bm and conn_key:
+                bm.stop_socket(conn_key)
+                logging.info(f"Stopped WebSocket stream with key: {conn_key}")
+                bm.close()
+                logging.info("Closed WebSocket manager")
+            else:
+                logging.warning("Invalid stream data, could not close properly")
+        else:
+            logging.warning("Unknown stream data format, could not close properly")
+                
+    except Exception as e:
+        logging.error(f"Error closing WebSocket stream: {e}")
+
+def process_market_stream_message(msg):
+    """
+    Example callback function to process WebSocket messages.
+    You would typically implement a custom version of this.
+    
+    Args:
+        msg: The message data from WebSocket
+        
+    Returns:
+        Processed data in a standardized format
+    """
+    try:
+        # Check if this is a kline message
+        if 'k' in msg:
+            kline = msg['k']
+            # Extract relevant data
+            processed_data = {
+                'timestamp': kline['t'],  # Kline start time
+                'open': float(kline['o']),
+                'high': float(kline['h']),
+                'low': float(kline['l']),
+                'close': float(kline['c']),
+                'volume': float(kline['v']),
+                'is_closed': kline['x'],  # Whether this kline is closed
+                'symbol': msg['s']
+            }
+            
+            if processed_data['is_closed']:
+                logging.info(f"Received closed kline: {processed_data['symbol']} @ {processed_data['timestamp']} - Close: {processed_data['close']}")
+            
+            return processed_data
+            
+        # Check if this is a trade message
+        elif 'p' in msg and 'q' in msg:
+            processed_data = {
+                'symbol': msg['s'],
+                'price': float(msg['p']),
+                'quantity': float(msg['q']),
+                'timestamp': msg['T'],
+                'buyer_maker': msg['m']  # True if buyer is maker
+            }
+            return processed_data
+            
+        # Handle error messages
+        elif 'e' in msg and msg['e'] == 'error':
+            logging.error(f"WebSocket error: {msg}")
+            return None
+            
+        # Unknown message format
+        else:
+            logging.warning(f"Unknown WebSocket message format: {msg}")
+            return msg
+            
+    except Exception as e:
+        logging.error(f"Error processing WebSocket message: {e}")
+        logging.error(f"Message was: {msg}")
+        return None
 
 # --- Main Execution ---
 if __name__ == "__main__":

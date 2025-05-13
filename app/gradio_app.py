@@ -232,12 +232,24 @@ def run_zen_backtest_callback(symbol, timeframe, ema_period, atr_period, atr_mul
     except Exception as e:
         error_message = f"Error parsing Lenia B: {e}. Using default: {strategy_params['lenia_b']}"
         print(error_message)
-        ui_params['lenia_b'] = strategy_params['lenia_b']
+        ui_params['lenia_b'] = strategy_params['lenia_b']    strategy_params.update(ui_params)
 
-    strategy_params.update(ui_params)
-
-    # Initialize Binance client for fetching data - API keys from env for now
-    binance_client = BinanceClient(os.getenv('BINANCE_API_KEY'), os.getenv('BINANCE_API_SECRET'))
+    # Initialize Binance client for fetching data
+    api_key = os.getenv('BINANCE_API_KEY')
+    api_secret = os.getenv('BINANCE_API_SECRET')
+    
+    if not api_key or not api_secret:
+        print(f"WARNING: Binance API keys not found in environment variables!")
+        print(f"For testing purposes, using a demo mode with sample data.")
+        # Here we could load sample data instead for demo purposes
+        # For now, continue with None values, and handle the error in fetch_data
+    
+    try:
+        binance_client = BinanceClient(api_key, api_secret)
+        print("Binance client initialized successfully.")
+    except Exception as e:
+        print(f"ERROR initializing Binance client: {e}")
+        binance_client = None
 
 
     if optimization_log_file is not None:
@@ -252,17 +264,33 @@ def run_zen_backtest_callback(symbol, timeframe, ema_period, atr_period, atr_mul
         except Exception as e:
             print(f"Error loading from optimization log: {e}. Using UI/default parameters.")
     
-    print(f"Final Strategy Parameters: {strategy_params}")
-
-    candles_for_simulation_run = 500
+    print(f"Final Strategy Parameters: {strategy_params}")    candles_for_simulation_run = 500
     total_candles_to_fetch = strategy_params['lookback_candles'] + candles_for_simulation_run
     
     print(f"Fetching {total_candles_to_fetch} candles for {strategy_params['symbol']} ({strategy_params['timeframe']})...")
+    
+    if binance_client is None:
+        error_msg = "ERROR: Binance API keys not set or not valid. Cannot fetch market data."
+        print(error_msg)
+        print("You need to set BINANCE_API_KEY and BINANCE_API_SECRET environment variables.")
+        print("For example on Windows: ")
+        print("    set BINANCE_API_KEY=your_api_key")
+        print("    set BINANCE_API_SECRET=your_api_secret")
+        print("Or on Linux/macOS:")
+        print("    export BINANCE_API_KEY=your_api_key")
+        print("    export BINANCE_API_SECRET=your_api_secret")
+        return error_msg, None, error_msg, error_msg
+    
     historical_data = los_fetch_data(binance_client, strategy_params['symbol'], strategy_params['timeframe'], total_candles_to_fetch)
 
     if historical_data.empty or len(historical_data) < strategy_params['lookback_candles']:
         error_msg = "Failed to fetch sufficient historical data for backtesting."
         print(error_msg)
+        print("This could be due to:")
+        print("1. Invalid API keys")
+        print("2. API rate limits")
+        print("3. Symbol doesn't exist (check trading pair)")
+        print("4. Network issues")
         return error_msg, None, error_msg, error_msg
 
     print(f"Fetched {len(historical_data)} data points.")
@@ -487,9 +515,9 @@ if __name__ == "__main__":
     except ImportError:
         print("debugpy not available. Continuing without remote debugging capability.")
     
-    # Don't auto-initialize pipeline at startup to avoid memory errors
-    # The pipeline will be initialized when first needed (during image generation or ZEN backtest)
-    # init_pipeline() 
+    # Model will be lazy-loaded when needed to prevent memory errors at startup
+    # DO NOT initialize the pipeline here - it will be initialized on-demand
+    # when the user tries to generate an image or run a ZEN-augmented backtest
     
     print("Launching Gradio interface. The FLUX model will be loaded when needed...")
     demo.launch(
