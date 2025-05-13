@@ -36,46 +36,53 @@ def get_gpu_memory():
 
 def init_pipeline():
     global pipe
-    offload_folder = "offload_weights"  # Folder to store offloaded weights
+    # Create absolute path for offload folder to avoid path-related issues
+    offload_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'offload_weights'))
     os.makedirs(offload_folder, exist_ok=True)  # Ensure the folder exists
+    print(f"Using offload folder: {offload_folder}")
     pipe = None # Initialize pipe to None
+    
+    # Force garbage collection before loading models
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        print(f"CUDA available. Current memory: {torch.cuda.memory_allocated()/1024**2:.2f}MB allocated")
 
     try:
         print("Attempting to initialize pipeline on GPU...")
-        if use_int8 or get_gpu_memory() < 33:
-            print("Using int8 transformer model configuration.")
-            transformer_model = FluxTransformer2DModel.from_pretrained(
-                "sayakpaul/flux.1-schell-int8wo-improved",
-                torch_dtype=torch.int8,       # Model is int8
-                use_safetensors=True,         # Use safetensors
-                low_cpu_mem_usage=True,
-                device_map="auto",            # Automatically map model to available devices
-                offload_folder=offload_folder
-            )
-            pipe = FluxPipeline.from_pretrained(
-                "black-forest-labs/FLUX.1-schnell",
-                transformer=transformer_model, # Pass the int8 transformer
-                torch_dtype=torch.float16,     # Other components in float16
-                use_safetensors=True,         # Use safetensors for other components
-                low_cpu_mem_usage=True,
-                device_map="auto",            # Automatically map model to available devices
-                offload_folder=offload_folder
-            )
-        else:
-            print("Using float16 pipeline configuration.")
-            pipe = FluxPipeline.from_pretrained(
-                "black-forest-labs/FLUX.1-schnell",
-                torch_dtype=torch.float16,
-                use_safetensors=True,         # Use safetensors
-                low_cpu_mem_usage=True,
-                device_map="auto",            # Automatically map model to available devices
-                offload_folder=offload_folder
-            )
+        # Always use int8 version for more memory efficiency
+        print("Using int8 transformer model configuration for memory efficiency.")
+        transformer_model = FluxTransformer2DModel.from_pretrained(
+            "sayakpaul/flux.1-schell-int8wo-improved",
+            torch_dtype=torch.int8,       # Model is int8
+            use_safetensors=True,         # Use safetensors
+            low_cpu_mem_usage=True,
+            device_map="auto",            # Automatically map model to available devices
+            offload_folder=offload_folder,
+            offload_state_dict=True       # Explicitly enable offloading
+        )
+        pipe = FluxPipeline.from_pretrained(
+            "black-forest-labs/FLUX.1-schnell",
+            transformer=transformer_model, # Pass the int8 transformer
+            torch_dtype=torch.float16,     # Other components in float16
+            use_safetensors=True,         # Use safetensors for other components
+            low_cpu_mem_usage=True,
+            device_map="auto",            # Automatically map model to available devices
+            offload_folder=offload_folder,
+            offload_state_dict=True       # Explicitly enable offloading
+        )
         print(f"Pipeline initialized. Target device (from first component, e.g., transformer): {pipe.device if pipe else 'N/A'}")
 
-    except (RuntimeError, MemoryError) as e: # Catch both RuntimeError and MemoryError
+    except (RuntimeError, MemoryError, ValueError) as e: # Catch all relevant errors
         print(f"Error during GPU pipeline initialization ({type(e).__name__}: {e}). Falling back to CPU.")
         pipe = None # Ensure pipe is None before attempting CPU fallback
+        
+        # Force garbage collection again
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         try:
             print("Attempting to load FLUX.1-schnell on CPU with float32...")
             pipe = FluxPipeline.from_pretrained(
@@ -84,7 +91,8 @@ def init_pipeline():
                 use_safetensors=True,         # Use safetensors for CPU fallback
                 low_cpu_mem_usage=True,       # Still useful for CPU
                 device_map="cpu",             # Explicitly map to CPU
-                offload_folder=offload_folder # Still useful for managing shards even on CPU
+                offload_folder=offload_folder, # Still useful for managing shards even on CPU
+                offload_state_dict=True        # Explicitly enable offloading
             )
             print(f"Pipeline initialized on CPU. Target device: {pipe.device if pipe else 'N/A'}")
         except Exception as cpu_e:
@@ -471,10 +479,20 @@ with gr.Blocks() as demo:
         )
 
 if __name__ == "__main__":
-    import debugpy
-    debugpy.listen(("0.0.0.0", 5678))
-    print("debugpy is listening on port 5678. Attach your debugger now.")
-    init_pipeline()
+    # Enable debug mode if needed
+    try:
+        import debugpy
+        debugpy.listen(("0.0.0.0", 5678))
+        print("debugpy is listening on port 5678. Attach your debugger now.")
+    except ImportError:
+        print("debugpy not available. Continuing without remote debugging capability.")
+    
+    # Don't auto-initialize pipeline at startup to avoid memory errors
+    # The pipeline will be initialized when first needed (during image generation or ZEN backtest)
+    # init_pipeline() 
+    
+    print("Launching Gradio interface. The FLUX model will be loaded when needed...")
     demo.launch(
         debug=True,
+        share=False,  # Set to True if you want to create a public link
     )
