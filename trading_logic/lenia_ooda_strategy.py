@@ -798,13 +798,19 @@ if __name__ == "__main__":
     }
     current_timeframe_str = timeframe_str_map.get(DEFAULT_PARAMS['timeframe'], DEFAULT_PARAMS['timeframe'])
 
+    # Define project paths
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir) # Moves from trading_logic to ZenCtrl
+    data_dir = os.path.join(project_root, 'data')
+    output_dir = os.path.join(data_dir, 'output')
+
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+
     optimization_log_filename = DEFAULT_OPTIMIZATION_LOG_CSV 
     
-    if os.path.isabs(optimization_log_filename):
-        effective_csv_path = optimization_log_filename
-    else:
-        effective_csv_path = os.path.join(script_dir, optimization_log_filename)
+    # Path for optimization log CSV
+    effective_csv_path = os.path.join(data_dir, optimization_log_filename)
 
     logging.info(f"Attempting to load optimization log from: {effective_csv_path}")
 
@@ -817,7 +823,7 @@ if __name__ == "__main__":
     historical_data = fetch_data(client, 
                                  strategy_params['symbol'], 
                                  strategy_params['timeframe'], 
-                                 strategy_params['lookback_candles'] + 150)
+                                 strategy_params['lookback_candles'] + 150) # Fetch a bit more for safety
     
     def placeholder_zen_predictor(market_data, index):
         if market_data.iloc[index]['close'] > market_data.iloc[index]['open']:
@@ -830,7 +836,7 @@ if __name__ == "__main__":
         trades, final_value, pnl = run_simulation(historical_data, 
                                                   strategy_params, 
                                                   initial_balance_usd=10000,
-                                                  binance_client=client)
+                                                  binance_client=client) # Pass client here
         
         logging.info(f"\n--- Simulation Summary for {strategy_params['symbol']} ({current_timeframe_str}) ---")
         logging.info(f"Parameters Used: {strategy_params}")
@@ -839,8 +845,10 @@ if __name__ == "__main__":
         logging.info(f"Total Profit/Loss: {pnl:.2f} USD")
         
         if not trades.empty:
-            logging.info(f"Number of trades: {len(trades[trades['action']=='SELL'])}")
-            trades_csv_path = f"trades_log_{strategy_params['symbol']}_{current_timeframe_str}.csv"
+            logging.info(f"Number of trades: {len(trades[trades['action']=='SELL'])}") # Corrected to count sell trades for round trips
+            # Path for saving trades log
+            trades_csv_filename = f"trades_log_{strategy_params['symbol']}_{current_timeframe_str}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            trades_csv_path = os.path.join(output_dir, trades_csv_filename)
             trades.to_csv(trades_csv_path, index=False)
             logging.info(f"Trades log saved to {trades_csv_path}")
         else:
