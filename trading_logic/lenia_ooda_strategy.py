@@ -116,24 +116,78 @@ def fetch_data(binance_client, symbol, timeframe, lookback_candles):
         empty_df.index.name = 'timestamp'
         return empty_df
     
-    if lookback_candles > 1000:
-        logging.warning("lookback_candles > 1000, fetching only last 1000 due to API limit. Implement pagination for more.")
-        limit = 1000
-    else:
-        limit = lookback_candles
-
+    # Maximum records per API call
+    MAX_LIMIT = 1000
+    
     try:
-        klines = binance_client.get_klines(symbol=symbol, interval=timeframe, limit=limit)
-        df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
-                                           'close_time', 'quote_asset_volume', 'number_of_trades', 
-                                           'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = df[col].astype(float)
+        all_klines = []
         
-        logging.info(f"Successfully fetched {len(df)} candles for {symbol}.")
-        return df
+        # If we need more than MAX_LIMIT candles, we need to make multiple calls
+        if lookback_candles > MAX_LIMIT:
+            # We'll use pagination to fetch all required candles
+            remaining = lookback_candles
+            end_time = None  # Start from the most recent candle
+            
+            while remaining > 0:
+                # Calculate how many candles to fetch in this iteration
+                limit = min(remaining, MAX_LIMIT)
+                
+                # Fetch klines
+                params = {
+                    'symbol': symbol,
+                    'interval': timeframe,
+                    'limit': limit
+                }
+                
+                # Add end_time if we have one (not for the first call)
+                if end_time:
+                    params['endTime'] = end_time
+                
+                klines = binance_client.get_klines(**params)
+                
+                if not klines:
+                    break  # No more data available
+                
+                # Add to our collection
+                all_klines = klines + all_klines
+                
+                # Update for next iteration
+                remaining -= len(klines)
+                
+                # If we received fewer candles than requested, we've reached the beginning
+                if len(klines) < limit:
+                    break
+                
+                # Set the end_time for the next request to be the start time of the first candle in this batch
+                # Subtract 1 ms to avoid duplicate candle
+                end_time = klines[0][0] - 1
+                
+                # Rate limiting - sleep to avoid hitting API limits
+                time.sleep(0.1)
+                
+                logging.info(f"Fetched {len(klines)} candles, {remaining} remaining to fetch")
+        else:
+            # If requesting fewer than MAX_LIMIT candles, make a single call
+            all_klines = binance_client.get_klines(symbol=symbol, interval=timeframe, limit=lookback_candles)
+        
+        # Process the klines into a DataFrame
+        if all_klines:
+            df = pd.DataFrame(all_klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 
+                                            'close_time', 'quote_asset_volume', 'number_of_trades', 
+                                            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                df[col] = df[col].astype(float)
+            
+            logging.info(f"Successfully fetched {len(df)} candles for {symbol}.")
+            return df
+        else:
+            logging.warning(f"No data returned for {symbol} on {timeframe}.")
+            empty_df = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
+            empty_df.index.name = 'timestamp'
+            return empty_df
+            
     except Exception as e:
         logging.error(f"Error fetching klines for {symbol}: {e}")
         # Provide more specific error messages for common issues
@@ -356,15 +410,18 @@ def setup_market_data_stream(binance_client, symbol, callback_function, interval
         return None
         
     try:
-        # Recent versions of Binance API use a different approach for WebSockets
-        # They require using a ThreadedWebsocketManager
-        try:
+        # Check if ThreadedWebsocketManager is available in the current python-binance version
+        from importlib.util import find_spec
+        
+        if find_spec("binance.streams"):
+            # Newer version of binance API with ThreadedWebsocketManager
             from binance.streams import ThreadedWebsocketManager
+            logging.info("Using ThreadedWebsocketManager for WebSocket connection")
             
             # Initialize the WebSocket manager
             twm = ThreadedWebsocketManager(
-                api_key=binance_client.API_KEY,
-                api_secret=binance_client.API_SECRET
+                api_key=binance_client.API_KEY if hasattr(binance_client, 'API_KEY') else None,
+                api_secret=binance_client.API_SECRET if hasattr(binance_client, 'API_SECRET') else None
             )
             
             # Start the manager
@@ -390,13 +447,14 @@ def setup_market_data_stream(binance_client, symbol, callback_function, interval
             
             return {
                 'stream': stream,
-                'manager': twm
+                'manager': twm,
+                'type': 'threaded'
             }
             
-        except ImportError:
-            logging.warning("ThreadedWebsocketManager not found. Trying legacy BinanceSocketManager...")
-            # Fallback to legacy approach if ThreadedWebsocketManager is not available
+        elif find_spec("binance.websockets"):
+            # Legacy approach with BinanceSocketManager
             from binance.websockets import BinanceSocketManager
+            logging.info("Using legacy BinanceSocketManager for WebSocket connection")
             
             # Initialize the WebSocket manager
             bm = BinanceSocketManager(binance_client)
@@ -424,13 +482,145 @@ def setup_market_data_stream(binance_client, symbol, callback_function, interval
             
             return {
                 'connection_key': conn_key,
-                'socket_manager': bm
+                'socket_manager': bm,
+                'type': 'legacy'
+            }
+        else:
+            # Fallback to REST API polling if websocket modules are not available
+            logging.warning("WebSocket modules not found. Falling back to REST API polling.")
+            
+            import threading
+            import time
+            
+            class RestPollingManager:
+                def __init__(self, client, symbol, callback, interval=None, polling_interval=5.0):
+                    self.client = client
+                    self.symbol = symbol
+                    self.callback = callback
+                    self.interval = interval
+                    self.polling_interval = polling_interval  # seconds
+                    self.running = False
+                    self.thread = None
+                    self.last_timestamp = 0
+                    
+                def _polling_worker(self):
+                    while self.running:
+                        try:
+                            # For klines/candlesticks
+                            if self.interval:
+                                klines = self.client.get_klines(
+                                    symbol=self.symbol,
+                                    interval=self.interval,
+                                    limit=10  # Get last 10 candles
+                                )
+                                
+                                # Find new candles only
+                                for kline in klines:
+                                    timestamp = kline[0]  # Open time
+                                    if timestamp > self.last_timestamp:
+                                        # Format message similar to WebSocket format
+                                        formatted_msg = {
+                                            'e': 'kline',
+                                            's': self.symbol,
+                                            'k': {
+                                                't': kline[0],  # Open time
+                                                'T': kline[6],  # Close time
+                                                's': self.symbol,
+                                                'i': self.interval,
+                                                'f': 0,  # First trade ID (placeholder)
+                                                'L': 0,  # Last trade ID (placeholder)
+                                                'o': kline[1],  # Open
+                                                'c': kline[4],  # Close
+                                                'h': kline[2],  # High
+                                                'l': kline[3],  # Low
+                                                'v': kline[5],  # Volume
+                                                'n': 0,  # Number of trades (placeholder)
+                                                'x': True,  # Is closed
+                                                'q': kline[7],  # Quote asset volume
+                                                'V': 0,  # Taker buy base asset volume (placeholder)
+                                                'Q': 0,  # Taker buy quote asset volume (placeholder)
+                                                'B': 0   # Ignore (placeholder)
+                                            }
+                                        }
+                                        self.callback(formatted_msg)
+                                        
+                                        # Update last timestamp
+                                        if timestamp > self.last_timestamp:
+                                            self.last_timestamp = timestamp
+                            
+                            # For trade data
+                            else:
+                                trades = self.client.get_recent_trades(symbol=self.symbol, limit=20)
+                                
+                                # Find new trades only
+                                for trade in trades:
+                                    timestamp = trade['time']
+                                    if timestamp > self.last_timestamp:
+                                        # Format message similar to WebSocket format
+                                        formatted_msg = {
+                                            'e': 'trade',
+                                            'E': int(time.time() * 1000),  # Event time (current time)
+                                            's': self.symbol,
+                                            't': trade['id'],
+                                            'p': trade['price'],
+                                            'q': trade['qty'],
+                                            'b': trade.get('buyerOrderId', 0),
+                                            'a': trade.get('sellerOrderId', 0),
+                                            'T': timestamp,
+                                            'm': trade.get('isBuyerMaker', False),
+                                            'M': trade.get('isBestMatch', True)
+                                        }
+                                        self.callback(formatted_msg)
+                                        
+                                        # Update last timestamp
+                                        if timestamp > self.last_timestamp:
+                                            self.last_timestamp = timestamp
+                        
+                        except Exception as e:
+                            logging.error(f"Error in polling worker: {e}")
+                        
+                        # Sleep until next poll
+                        time.sleep(self.polling_interval)
+                
+                def start(self):
+                    if not self.running:
+                        self.running = True
+                        self.thread = threading.Thread(target=self._polling_worker)
+                        self.thread.daemon = True
+                        self.thread.start()
+                        logging.info(f"Started REST API polling for {self.symbol}")
+                        return True
+                    return False
+                    
+                def stop(self):
+                    if self.running:
+                        self.running = False
+                        if self.thread:
+                            self.thread.join(timeout=2.0)
+                        logging.info(f"Stopped REST API polling for {self.symbol}")
+                        return True
+                    return False
+            
+            # Create and start the polling manager
+            manager = RestPollingManager(
+                client=binance_client,
+                symbol=symbol,
+                callback=callback_function,
+                interval=interval,
+                polling_interval=5.0  # Poll every 5 seconds
+            )
+            
+            manager.start()
+            
+            return {
+                'manager': manager,
+                'type': 'rest_polling'
             }
         
     except Exception as e:
-        logging.error(f"Error setting up WebSocket stream: {e}")
+        logging.error(f"Error setting up data stream: {e}")
         if "No such file or directory" in str(e):
-            logging.error("WebSocket dependencies may not be installed. Try 'pip install websocket-client'")
+            logging.error("Dependencies may not be installed. Try 'pip install python-binance websocket-client'")
         return None
         
 def close_market_data_stream(stream_data):
@@ -445,33 +635,89 @@ def close_market_data_stream(stream_data):
         return
         
     try:
-        # Check if this is a ThreadedWebsocketManager
-        if 'manager' in stream_data:
+        stream_type = stream_data.get('type', '')
+        
+        # Handle different stream types
+        if stream_type == 'threaded':
+            # ThreadedWebsocketManager
             twm = stream_data.get('manager')
             stream = stream_data.get('stream')
             
             if twm and stream:
-                twm.stop_socket(stream)
-                logging.info(f"Stopped WebSocket stream: {stream}")
-                twm.stop()
-                logging.info("Stopped WebSocket manager")
+                try:
+                    twm.stop_socket(stream)
+                    logging.info(f"Stopped WebSocket stream: {stream}")
+                    twm.stop()
+                    logging.info("Stopped WebSocket manager")
+                except Exception as e:
+                    logging.error(f"Error stopping ThreadedWebsocketManager: {e}")
             else:
                 logging.warning("Invalid stream data, could not close properly")
-                
-        # Otherwise, assume legacy BinanceSocketManager
-        elif 'socket_manager' in stream_data:
+        
+        elif stream_type == 'legacy':
+            # Legacy BinanceSocketManager
             bm = stream_data.get('socket_manager')
             conn_key = stream_data.get('connection_key')
             
             if bm and conn_key:
-                bm.stop_socket(conn_key)
-                logging.info(f"Stopped WebSocket stream with key: {conn_key}")
-                bm.close()
-                logging.info("Closed WebSocket manager")
+                try:
+                    bm.stop_socket(conn_key)
+                    logging.info(f"Stopped WebSocket stream with key: {conn_key}")
+                    bm.close()
+                    logging.info("Closed WebSocket manager")
+                except Exception as e:
+                    logging.error(f"Error stopping BinanceSocketManager: {e}")
             else:
                 logging.warning("Invalid stream data, could not close properly")
+        
+        elif stream_type == 'rest_polling':
+            # REST API polling fallback
+            manager = stream_data.get('manager')
+            
+            if manager:
+                try:
+                    manager.stop()
+                    logging.info("Stopped REST API polling manager")
+                except Exception as e:
+                    logging.error(f"Error stopping REST API polling manager: {e}")
+            else:
+                logging.warning("Invalid polling manager, could not close properly")
+                
         else:
-            logging.warning("Unknown stream data format, could not close properly")
+            # Backward compatibility with older implementations
+            if 'manager' in stream_data and 'stream' in stream_data:
+                # Assume ThreadedWebsocketManager
+                twm = stream_data.get('manager')
+                stream = stream_data.get('stream')
+                
+                if twm and stream:
+                    try:
+                        twm.stop_socket(stream)
+                        logging.info(f"Stopped WebSocket stream: {stream}")
+                        twm.stop()
+                        logging.info("Stopped WebSocket manager")
+                    except Exception as e:
+                        logging.error(f"Error stopping WebSocket manager: {e}")
+                else:
+                    logging.warning("Invalid stream data, could not close properly")
+                    
+            elif 'socket_manager' in stream_data and 'connection_key' in stream_data:
+                # Assume legacy BinanceSocketManager
+                bm = stream_data.get('socket_manager')
+                conn_key = stream_data.get('connection_key')
+                
+                if bm and conn_key:
+                    try:
+                        bm.stop_socket(conn_key)
+                        logging.info(f"Stopped WebSocket stream with key: {conn_key}")
+                        bm.close()
+                        logging.info("Closed WebSocket manager")
+                    except Exception as e:
+                        logging.error(f"Error stopping WebSocket manager: {e}")
+                else:
+                    logging.warning("Invalid stream data, could not close properly")
+            else:
+                logging.warning("Unknown stream data format, could not close properly")
                 
     except Exception as e:
         logging.error(f"Error closing WebSocket stream: {e}")
