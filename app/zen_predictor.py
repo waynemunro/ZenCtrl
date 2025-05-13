@@ -131,7 +131,10 @@ def get_zen_signal(
     base_prompt: str, 
     flux_pipe,  # The initialized FLUX pipeline object
     model_config: dict, 
-    strategy_params: dict = None
+    strategy_params: dict = None,
+    save_images: bool = False,
+    save_path: str = None,
+    image_timestamp: str = None
 ) -> float:
     """
     Generates a ZEN image based on market data and strategy parameters,
@@ -144,6 +147,9 @@ def get_zen_signal(
         flux_pipe: The initialized FLUX pipeline object.
         model_config (dict): Configuration for the image generation (height, width, steps, etc.).
         strategy_params (dict, optional): Parameters of the trading strategy.
+        save_images (bool, optional): Whether to save the generated images to disk. Default is False.
+        save_path (str, optional): Directory path to save images. If None, uses 'zen_images' in current directory.
+        image_timestamp (str, optional): Timestamp to use in the image filename. If None, uses current time.
 
     Returns:
         float: A trading signal between -1.0 and 1.0. Returns 0.0 if generation or analysis fails.
@@ -187,6 +193,32 @@ def get_zen_signal(
         if images_output and isinstance(images_output, list) and len(images_output) > 0:
             generated_image = images_output[0]
             logger.info("ZEN image generated successfully.")
+            
+            # Save the image if requested
+            if save_images and generated_image:
+                try:
+                    if not save_path:
+                        save_path = "zen_images"
+                    
+                    # Create directory if it doesn't exist
+                    import os
+                    os.makedirs(save_path, exist_ok=True)
+                    
+                    # Use timestamp for filename
+                    if not image_timestamp:
+                        import datetime
+                        image_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    
+                    # Create a descriptive filename
+                    signal_type = "bullish" if analyze_zen_image_to_signal(generated_image) > 0 else "bearish"
+                    filename = f"{image_timestamp}_{strategy_params.get('symbol', 'unknown')}_{signal_type}.png"
+                    filepath = os.path.join(save_path, filename)
+                    
+                    # Save the image
+                    generated_image.save(filepath)
+                    logger.info(f"ZEN image saved to {filepath}")
+                except Exception as save_err:
+                    logger.error(f"Error saving ZEN image: {save_err}", exc_info=True)
         else:
             logger.warning("ZEN image generation did not return a valid image.")
 
@@ -284,7 +316,10 @@ if __name__ == '__main__':
             base_prompt=mock_base_prompt + " positive outlook", # to influence mock image
             flux_pipe=mock_pipe_instance, 
             model_config=mock_model_cfg,
-            strategy_params=mock_strategy_p
+            strategy_params=mock_strategy_p,
+            save_images=True,
+            save_path="test_images",
+            image_timestamp="20230101_120000"
         )
         print(f"Generated ZEN Signal (positive prompt): {signal:.4f}")
 
@@ -294,7 +329,10 @@ if __name__ == '__main__':
             base_prompt=mock_base_prompt + " strong downward pressure", # to influence mock image
             flux_pipe=mock_pipe_instance,
             model_config=mock_model_cfg,
-            strategy_params=mock_strategy_p
+            strategy_params=mock_strategy_p,
+            save_images=True,
+            save_path="test_images",
+            image_timestamp="20230101_120001"
         )
         print(f"Generated ZEN Signal (negative prompt): {signal_neg:.4f}")
     else:

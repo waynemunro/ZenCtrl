@@ -232,7 +232,9 @@ def run_zen_backtest_callback(symbol, timeframe, ema_period, atr_period, atr_mul
     except Exception as e:
         error_message = f"Error parsing Lenia B: {e}. Using default: {strategy_params['lenia_b']}"
         print(error_message)
-        ui_params['lenia_b'] = strategy_params['lenia_b']    strategy_params.update(ui_params)
+        ui_params['lenia_b'] = strategy_params['lenia_b']
+        
+    strategy_params.update(ui_params)
 
     # Initialize Binance client for fetching data
     api_key = os.getenv('BINANCE_API_KEY')
@@ -251,6 +253,12 @@ def run_zen_backtest_callback(symbol, timeframe, ema_period, atr_period, atr_mul
         print(f"ERROR initializing Binance client: {e}")
         binance_client = None
 
+    # Create a directory for ZEN images if using ZEN
+    zen_images_dir = None
+    if enable_zen:
+        zen_images_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'zen_images')
+        os.makedirs(zen_images_dir, exist_ok=True)
+        print(f"ZEN images will be saved to: {zen_images_dir}")
 
     if optimization_log_file is not None:
         try:
@@ -264,7 +272,9 @@ def run_zen_backtest_callback(symbol, timeframe, ema_period, atr_period, atr_mul
         except Exception as e:
             print(f"Error loading from optimization log: {e}. Using UI/default parameters.")
     
-    print(f"Final Strategy Parameters: {strategy_params}")    candles_for_simulation_run = 500
+    print(f"Final Strategy Parameters: {strategy_params}")
+    
+    candles_for_simulation_run = 500
     total_candles_to_fetch = strategy_params['lookback_candles'] + candles_for_simulation_run
     
     print(f"Fetching {total_candles_to_fetch} candles for {strategy_params['symbol']} ({strategy_params['timeframe']})...")
@@ -279,7 +289,7 @@ def run_zen_backtest_callback(symbol, timeframe, ema_period, atr_period, atr_mul
         print("Or on Linux/macOS:")
         print("    export BINANCE_API_KEY=your_api_key")
         print("    export BINANCE_API_SECRET=your_api_secret")
-        return error_msg, None, error_msg, error_msg
+        return error_msg, None, error_msg, error_msg, None
     
     historical_data = los_fetch_data(binance_client, strategy_params['symbol'], strategy_params['timeframe'], total_candles_to_fetch)
 
@@ -291,7 +301,7 @@ def run_zen_backtest_callback(symbol, timeframe, ema_period, atr_period, atr_mul
         print("2. API rate limits")
         print("3. Symbol doesn't exist (check trading pair)")
         print("4. Network issues")
-        return error_msg, None, error_msg, error_msg
+        return error_msg, None, error_msg, error_msg, None
 
     print(f"Fetched {len(historical_data)} data points.")
 
@@ -312,6 +322,8 @@ def run_zen_backtest_callback(symbol, timeframe, ema_period, atr_period, atr_mul
             historical_data_summary_for_zen['total_period_return'] = 0.0
 
     actual_zen_predictor_func = None
+    zen_images = []  # List to store paths to generated ZEN images
+    
     if enable_zen:
         if pipe is None:
             print("ZEN enabled, but pipeline not initialized. Attempting to initialize now.")
@@ -325,16 +337,38 @@ def run_zen_backtest_callback(symbol, timeframe, ema_period, atr_period, atr_mul
             slice_size = 5
             start_slice_idx = max(0, current_idx - slice_size + 1)
             current_market_data_slice = simulation_df.iloc[start_slice_idx : current_idx + 1]
-
-            print(f"Calling actual get_zen_signal for candle at index: {current_idx}, timestamp: {simulation_df.index[current_idx]}")
-            return get_zen_signal(
+            
+            # Format timestamp for the image filename
+            timestamp = simulation_df.index[current_idx].strftime("%Y%m%d_%H%M%S")
+            print(f"Calling actual get_zen_signal for candle at index: {current_idx}, timestamp: {timestamp}")
+            
+            # Call ZEN predictor with image saving enabled
+            signal = get_zen_signal(
                 current_market_data=current_market_data_slice, 
                 historical_data_summary=historical_data_summary_for_zen, 
                 base_prompt=base_prompt_zen,
                 flux_pipe=pipe, 
-                model_config=model_config, 
-                strategy_params=strategy_params 
+                model_config=model_config,
+                strategy_params=strategy_params,
+                save_images=True,
+                save_path=zen_images_dir,
+                image_timestamp=timestamp
             )
+            
+            # Find the most recently created image file in the zen_images_dir
+            if zen_images_dir:
+                try:
+                    all_images = [os.path.join(zen_images_dir, f) for f in os.listdir(zen_images_dir) 
+                                 if f.startswith(timestamp) and f.endswith('.png')]
+                    if all_images:
+                        latest_image = max(all_images, key=os.path.getctime)
+                        zen_images.append(latest_image)
+                        print(f"Added ZEN image to collection: {latest_image}")
+                except Exception as e:
+                    print(f"Error finding ZEN image: {e}")
+            
+            return signal
+            
         actual_zen_predictor_func = zen_predictor_wrapper_for_simulation
         print("ZEN augmentation enabled. ZEN predictor function is set.")
     elif enable_zen and pipe is None:
@@ -392,10 +426,48 @@ def run_zen_backtest_callback(symbol, timeframe, ema_period, atr_period, atr_mul
     print(f"Key Metrics: {key_metrics_str}")
 
     zen_insights_str = "ZEN Insights: Not yet implemented. Will show ZEN images/signals here."
-    if enable_zen and trades_df is not None and not trades_df.empty and 'active_zen_signal' in trades_df.columns:
-        zen_insights_str = "ZEN Signals recorded in Trade Log (see 'active_zen_signal' column).\n"
-
-    return trade_log_output_str, pnl_chart_data, key_metrics_str, zen_insights_str
+    zen_images_output = None
+    
+    if enable_zen and zen_images:
+        # Limit to the most important images (start, end, and a few in between)
+        max_images_to_show = 9  # for a 3x3 gallery
+        if len(zen_images) > max_images_to_show:
+            # Select evenly spaced images including first and last
+            indices = np.linspace(0, len(zen_images)-1, max_images_to_show, dtype=int)
+            selected_images = [zen_images[i] for i in indices]
+        else:
+            selected_images = zen_images
+            
+        try:
+            # Convert file paths to PIL images
+            pil_images = [Image.open(img_path) for img_path in selected_images]
+            zen_images_output = pil_images
+            
+            # Create a more informative insights string
+            zen_insights_str = f"ZEN generated {len(zen_images)} images during the backtest.\n"
+            
+            if trades_df is not None and not trades_df.empty and 'active_zen_signal' in trades_df.columns:
+                # Calculate some statistics about ZEN signals
+                zen_signals = trades_df['active_zen_signal'].dropna()
+                if not zen_signals.empty:
+                    avg_signal = zen_signals.mean()
+                    max_signal = zen_signals.max()
+                    min_signal = zen_signals.min()
+                    zen_insights_str += f"Average ZEN signal: {avg_signal:.4f} (range: {min_signal:.4f} to {max_signal:.4f})\n"
+                    
+                    # Count how many trades were influenced by ZEN
+                    zen_influenced = trades_df[trades_df['active_zen_signal'].abs() > 0.1]
+                    if not zen_influenced.empty:
+                        zen_insights_str += f"ZEN influenced {len(zen_influenced)} trading decisions.\n"
+            
+            zen_insights_str += "The gallery shows selected ZEN-generated images from the backtest period."
+        except Exception as e:
+            print(f"Error preparing ZEN images for display: {e}")
+            zen_insights_str += f"\nError displaying images: {e}"
+    elif enable_zen:
+        zen_insights_str = "ZEN was enabled but no images were generated during the backtest."
+    
+    return trade_log_output_str, pnl_chart_data, key_metrics_str, zen_insights_str, zen_images_output
 
 with gr.Blocks() as demo:
     gr.Markdown("# ZenCtrl: Generative Backtesting & Visualization")
@@ -489,6 +561,7 @@ with gr.Blocks() as demo:
             with gr.Column():
                 pnl_chart_output = gr.Plot(label="P&L Chart")
                 zen_insights_output = gr.Textbox(label="ZEN Insights/Images (Placeholder)", lines=5, interactive=False)
+                zen_images_gallery = gr.Gallery(label="ZEN Images", show_label=True, elem_id="zen_gallery", columns=[3], rows=[3], object_fit="contain", height="auto")
 
         backtest_inputs = [
             symbol_input, timeframe_input, ema_period_input, atr_period_input, atr_multiplier_input,
@@ -498,7 +571,7 @@ with gr.Blocks() as demo:
             optimization_log_upload,
             enable_zen_checkbox, zen_signal_weight_slider, base_prompt_zen_textbox, zen_prediction_frequency_input
         ]
-        backtest_outputs = [trade_log_output, pnl_chart_output, key_metrics_output, zen_insights_output]
+        backtest_outputs = [trade_log_output, pnl_chart_output, key_metrics_output, zen_insights_output, zen_images_gallery]
 
         run_backtest_button.click(
             fn=run_zen_backtest_callback,
