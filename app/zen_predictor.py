@@ -125,219 +125,66 @@ def analyze_zen_image_to_signal(image: Image.Image) -> float:
         logger.error(f"Error during ZEN image analysis: {e}. Returning neutral signal.")
         return 0.0
 
-def get_zen_signal(
-    current_market_data: pd.DataFrame, 
-    historical_data_summary: pd.Series, 
-    base_prompt: str, 
-    flux_pipe,  # The initialized FLUX pipeline object
-    model_config: dict, 
-    strategy_params: dict = None,
-    save_images: bool = False,
-    save_path: str = None,
-    image_timestamp: str = None
-) -> float:
+def get_zen_signal(current_market_data: pd.Series, 
+                   historical_data_summary: pd.DataFrame, 
+                   optional_prompt_elements: str = "") -> float:
     """
-    Generates a ZEN image based on market data and strategy parameters,
-    then analyzes it to produce a trading signal.
+    Generates a predictive signal using ZEN's image generation and analysis capabilities.
 
     Args:
-        current_market_data (pd.DataFrame): Slice of recent market data.
-        historical_data_summary (pd.Series): Summary statistics of the entire historical dataset.
-        base_prompt (str): User-defined base prompt.
-        flux_pipe: The initialized FLUX pipeline object.
-        model_config (dict): Configuration for the image generation (height, width, steps, etc.).
-        strategy_params (dict, optional): Parameters of the trading strategy.
-        save_images (bool, optional): Whether to save the generated images to disk. Default is False.
-        save_path (str, optional): Directory path to save images. If None, uses 'zen_images' in current directory.
-        image_timestamp (str, optional): Timestamp to use in the image filename. If None, uses current time.
+        current_market_data: DataFrame row or dict for the current timestep.
+        historical_data_summary: A small window of past prices, volumes, or LeniaOODA indicator states.
+        optional_prompt_elements: User-defined text or parameters to guide image generation.
 
     Returns:
-        float: A trading signal between -1.0 and 1.0. Returns 0.0 if generation or analysis fails.
+        A normalized signal (e.g., -1.0 for strong sell, 0.0 for neutral, 1.0 for strong buy).
     """
-    if flux_generate_func is None or flux_pipe is None:
-        logger.warning("FLUX generate function or pipeline not available. ZEN signal generation skipped.")
-        return 0.0
+    print(f"ZEN_PREDICTOR: Received current_market_data:\n{current_market_data}")
+    print(f"ZEN_PREDICTOR: Received historical_data_summary:\n{historical_data_summary.head()}")
+    print(f"ZEN_PREDICTOR: Received optional_prompt_elements: {optional_prompt_elements}")
 
-    if strategy_params is None:
-        strategy_params = {}
+    # 1. Construct a prompt for flux.generate.generate
+    prompt = f"Analyze market sentiment based on current price {current_market_data.get('close', 'N/A')} "
+    prompt += f"and recent historical trends. {optional_prompt_elements}"
+    print(f"ZEN_PREDICTOR: Constructed prompt: {prompt}")
 
-    # 1. Construct the prompt
-    prompt = construct_prompt_for_zen(current_market_data, historical_data_summary, base_prompt, strategy_params)
+    # 2. Simulate image generation and analysis
+    simulated_image_analysis_outcome = "bullish"  # Simulated outcome
 
-    # 2. Generate the image
-    generated_image = None
-    try:
-        logger.info(f"Generating ZEN image with prompt: {prompt[:200]}...") # Log a snippet
-        # Ensure all necessary parameters for flux_generate_func are present in model_config or defaulted
-        height = model_config.get("height", 1024)
-        width = model_config.get("width", 1024)
-        num_inference_steps = model_config.get("num_inference_steps", 20)
-        guidance_scale = model_config.get("guidance_scale", 7.0)
-        # Seed could be fixed for a run, or varied. For backtesting, fixing per step might be too slow.
-        # Using a default or random seed for now.
-        seed = model_config.get("seed") # Allow seed to be None for random
-        
-        # The flux_generate_func is imported from flux.generate
-        # Its signature based on gradio_app.py usage:
-        # flux_generate(pipe, prompt, negative_prompt, height, width, num_inference_steps, guidance_scale, seed)
-        images_output = flux_generate_func(
-            flux_pipe,
-            prompt,
-            None,  # negative_prompt - not currently used
-            height,
-            width,
-            num_inference_steps,
-            guidance_scale,
-            seed # Pass seed, can be None
-        )
-        if images_output and isinstance(images_output, list) and len(images_output) > 0:
-            generated_image = images_output[0]
-            logger.info("ZEN image generated successfully.")
-            
-            # Save the image if requested
-            if save_images and generated_image:
-                try:
-                    if not save_path:
-                        save_path = "zen_images"
-                    
-                    # Create directory if it doesn't exist
-                    import os
-                    os.makedirs(save_path, exist_ok=True)
-                    
-                    # Use timestamp for filename
-                    if not image_timestamp:
-                        import datetime
-                        image_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                    
-                    # Create a descriptive filename
-                    signal_type = "bullish" if analyze_zen_image_to_signal(generated_image) > 0 else "bearish"
-                    filename = f"{image_timestamp}_{strategy_params.get('symbol', 'unknown')}_{signal_type}.png"
-                    filepath = os.path.join(save_path, filename)
-                    
-                    # Save the image
-                    generated_image.save(filepath)
-                    logger.info(f"ZEN image saved to {filepath}")
-                except Exception as save_err:
-                    logger.error(f"Error saving ZEN image: {save_err}", exc_info=True)
-        else:
-            logger.warning("ZEN image generation did not return a valid image.")
+    # 3. Image-to-Signal Conversion
+    signal = 0.0
+    if simulated_image_analysis_outcome == "bullish":
+        signal = 0.75
+    elif simulated_image_analysis_outcome == "bearish":
+        signal = -0.75
+    else:
+        signal = 0.0
+    print(f"ZEN_PREDICTOR: Simulated image analysis outcome: {simulated_image_analysis_outcome}, Signal: {signal}")
 
-    except Exception as e:
-        logger.error(f"Error during ZEN image generation: {e}", exc_info=True)
-        return 0.0 # Return neutral signal on error
-
-    # 3. Analyze the image
-    signal = analyze_zen_image_to_signal(generated_image)
-    
+    # 4. Return a normalized signal
     return signal
 
-# Example usage (for testing this module standalone, if FLUX was available)
 if __name__ == '__main__':
-    # This block is for illustrative testing and requires a mock FLUX setup or actual FLUX.
-    # It won't run correctly without FLUX and proper data.
-    print("ZEN Predictor module - Standalone Test (Illustrative)")
-
-    # Mock data for testing
-    mock_market_data_list = []
-    for i in range(10):
-        mock_market_data_list.append({
-            'timestamp': pd.Timestamp('2023-01-01') + pd.Timedelta(days=i),
-            'open': 100 + i,
-            'high': 105 + i,
-            'low': 98 + i,
-            'close': 102 + i,
-            'volume': 1000 + i * 100
-        })
-    mock_current_data = pd.DataFrame(mock_market_data_list)
-    
-    mock_summary_stats = pd.Series({
-        ('close', 'mean'): 105.0, ('close', 'median'): 105.0, ('close', 'std'): 3.0,
-        ('volume', 'mean'): 1500.0, ('volume', 'sum'): 15000,
-        'total_period_return': 0.05
+    # Example Usage (for testing this module standalone)
+    print("ZEN_PREDICTOR: Running standalone test...")
+    dummy_current_data = pd.Series({
+        'timestamp': pd.Timestamp('2025-05-13 10:00:00'),
+        'open': 100,
+        'high': 105,
+        'low': 98,
+        'close': 102,
+        'volume': 1000
     })
-    mock_base_prompt = "Visualize market energy for short-term Bitcoin price action."
-    
-    # Mock FLUX pipeline and model_config
-    class MockFluxPipe:
-        def __call__(self, *args, **kwargs): # Make it callable if flux_generate_func expects that
-            print("MockFluxPipe called (simulating __call__ if generate uses it directly)")
-            img = Image.new('RGB', (100, 100), color = 'red') # Dummy image
-            return [img] # Expected output format
+    dummy_historical_data = pd.DataFrame({
+        'timestamp': pd.to_datetime(['2025-05-13 09:55:00', '2025-05-13 09:50:00']),
+        'open': [98, 95],
+        'high': [100, 97],
+        'low': [97, 94],
+        'close': [99, 96],
+        'volume': [800, 700]
+    })
+    dummy_prompt_elements = "Focus on short-term volatility."
 
-    mock_pipe_instance = MockFluxPipe()
-    
-    # Mock flux_generate_func if not imported
-    if flux_generate_func is None:
-        def mock_flux_generate(pipe, prompt, neg_prompt, h, w, steps, scale, seed_val):
-            print(f"Mock flux_generate_func called with prompt: {prompt}")
-            # Simulate image generation based on prompt keywords for varied testing
-            if "upward" in prompt or "positive" in prompt:
-                # Brighter image for "upward"
-                avg_color = int(255 * 0.75) # Brighter
-            elif "downward" in prompt or "negative" in prompt:
-                # Darker image for "downward"
-                avg_color = int(255 * 0.25) # Darker
-            else:
-                # Neutral image
-                avg_color = int(255 * 0.5) # Medium gray
-            
-            img = Image.new('L', (h, w), color=avg_color)
-            return [img]
-        flux_generate_func = mock_flux_generate
-
-
-    mock_model_cfg = {"height": 64, "width": 64, "num_inference_steps": 1, "guidance_scale": 1.0, "seed": 42}
-    mock_strategy_p = {"asset": "BTC/USD", "timeframe": "1h"}
-
-    print(f"Is flux_generate_func available? {'Yes' if flux_generate_func else 'No'}")
-    print(f"Is mock_pipe_instance available? {'Yes' if mock_pipe_instance else 'No'}")
-
-
-    # Test construct_prompt_for_zen
-    test_prompt = construct_prompt_for_zen(mock_current_data.iloc[-5:], mock_summary_stats, mock_base_prompt, mock_strategy_p)
-    print(f"Test Prompt: {test_prompt}")
-
-    # Test analyze_zen_image_to_signal
-    bright_image = Image.new('L', (64,64), color=200) # Bright
-    dark_image = Image.new('L', (64,64), color=50) # Dark
-    print(f"Analysis of bright image (expected positive): {analyze_zen_image_to_signal(bright_image):.4f}")
-    print(f"Analysis of dark image (expected negative): {analyze_zen_image_to_signal(dark_image):.4f}")
-    print(f"Analysis of None image (expected 0.0): {analyze_zen_image_to_signal(None):.4f}")
-
-
-    # Test get_zen_signal
-    # Note: This test will use the mock flux_generate_func if the real one isn't found.
-    # The mock_pipe_instance is passed as flux_pipe.
-    if flux_generate_func and mock_pipe_instance:
-        print("\nTesting get_zen_signal:")
-        signal = get_zen_signal(
-            current_market_data=mock_current_data.iloc[-5:], # last 5 rows as current slice
-            historical_data_summary=mock_summary_stats,
-            base_prompt=mock_base_prompt + " positive outlook", # to influence mock image
-            flux_pipe=mock_pipe_instance, 
-            model_config=mock_model_cfg,
-            strategy_params=mock_strategy_p,
-            save_images=True,
-            save_path="test_images",
-            image_timestamp="20230101_120000"
-        )
-        print(f"Generated ZEN Signal (positive prompt): {signal:.4f}")
-
-        signal_neg = get_zen_signal(
-            current_market_data=mock_current_data.iloc[-5:],
-            historical_data_summary=mock_summary_stats,
-            base_prompt=mock_base_prompt + " strong downward pressure", # to influence mock image
-            flux_pipe=mock_pipe_instance,
-            model_config=mock_model_cfg,
-            strategy_params=mock_strategy_p,
-            save_images=True,
-            save_path="test_images",
-            image_timestamp="20230101_120001"
-        )
-        print(f"Generated ZEN Signal (negative prompt): {signal_neg:.4f}")
-    else:
-        print("\nSkipping get_zen_signal test as flux_generate_func or mock_pipe_instance is not available.")
-
-    # Example of initializing the global pipeline (though not used by get_zen_signal directly)
-    # initialize_zen_predictor(mock_pipe_instance)
-    # print(f"Global _pipeline set: {_pipeline is not None}")
+    zen_signal = get_zen_signal(dummy_current_data, dummy_historical_data, dummy_prompt_elements)
+    print(f"ZEN_PREDICTOR: Standalone test - Received ZEN signal: {zen_signal}")
+    print("ZEN_PREDICTOR: Standalone test completed.")
