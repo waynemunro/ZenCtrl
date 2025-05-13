@@ -1,4 +1,4 @@
-                                 Apache License
+Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
 
@@ -172,6 +172,27 @@
       defend, and hold each Contributor harmless for any liability
       incurred by, or claims asserted against, such Contributor by reason
       of your accepting any such warranty or additional liability.
+
+   10. Windfall Distribution.
+
+      (a) "Windfall Event" shall mean the realization of net profits directly attributable
+          to the commercial exploitation of the Work or Derivative Works thereof,
+          exceeding [Specify Threshold Amount, e.g., USD 1,000,000] in any single
+          fiscal year, after deducting all reasonable operational and development costs.
+
+      (b) In the event of a Windfall Event, You agree to distribute [Specify Percentage, e.g., 10%]
+          of the net profits exceeding the threshold defined in Section 10(a) (the "Windfall Share")
+          to [Specify Beneficiary, e.g., the original Licensor, a non-profit foundation dedicated
+          to open-source software, or pro-rata to Contributors as listed in the NOTICE file].
+
+      (c) You agree to provide the Licensor (or the specified beneficiary) with an annual
+          audited statement detailing the calculation of any Windfall Share within
+          [Specify Timeframe, e.g., 90 days] of the end of Your fiscal year.
+
+      (d) This Section 10 shall survive the termination of this License for any reason.
+          The obligations under this Section 10 are specific to this modified version
+          of the Apache License and may not be present in the standard Apache License 2.0.
+          You are advised to consult legal counsel regarding the implications of this clause.
 
    END OF TERMS AND CONDITIONS
 
