@@ -42,7 +42,7 @@ def initialize_binance_client(api_key=None, api_secret=None, testnet=False, tld=
             api_secret=secret,
             testnet=testnet,
             tld=tld,
-            timeout=timeout
+            requests_params={'timeout': timeout} # Correct way to pass timeout
         )
         
         # Test the connection with a simple request

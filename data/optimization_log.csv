@@ -1,0 +1,2 @@
+symbol,timeframe,ema_period,atr_period,atr_multiplier,momentum_period,rsi_period,rsi_oversold,rsi_overbought,lenia_r,lenia_t,lenia_b,lenia_m,lenia_s,lookback_candles,trade_amount_usd,profit_usd
+BTCUSDT,15m,20,14,2.0,10,14,30,70,5,10,"[0.14,0.26,0.38,0.33]",0.15,0.015,200,1000,0
