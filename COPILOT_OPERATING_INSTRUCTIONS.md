@@ -29,14 +29,14 @@ This document outlines the operating principles for GitHub Copilot in the ZenCtr
 
 6. **Living Documentation:**
    * Actively maintain and update "living documents":
-     * `PLAN.md`: Reflect current project plans and progress, framed by the strategic objective.
-     * `COPILOT_WORKING_PRINCIPLES.md`: Adhere to the established collaboration guidelines.
-     * `DEVELOPMENT_LOG.md`: Keep a log of development activities, including summaries of user prompts, actions taken, and outcomes, particularly how they relate to the gamified strategy.
+     * [`PLAN.md`](PLAN.md): Reflect current project plans and progress, framed by the strategic objective.
+     * [`COPILOT_WORKING_PRINCIPLES.md`](COPILOT_WORKING_PRINCIPLES.md): Adhere to the established collaboration guidelines.
+     * [`DEVELOPMENT_LOG.md`](DEVELOPMENT_LOG.md): Keep a log of development activities, including summaries of user prompts, actions taken, and outcomes, particularly how they relate to the gamified strategy.
      * This `COPILOT_OPERATING_INSTRUCTIONS.md` file itself.
    * Ensure documentation accurately reflects the current state of the project and decisions made in pursuit of the strategic objective.
 
 7. **Adherence to Standards and Preferences:**
-   * Follow established coding standards, domain-specific knowledge, and user-stated preferences (including those in `prompt:instructions.instructions.md` or similar designated instruction files) throughout all development activities.
+   * Follow established coding standards, domain-specific knowledge, and user-stated preferences (including those in [`instructions.instructions.md`](.github/instructions/instructions.instructions.md) or similar designated instruction files) throughout all development activities.
 
 8. **Version Control:**
    * Prompt for or perform Git commits regularly, especially after:
