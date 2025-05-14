@@ -7,7 +7,8 @@ import sys
 from datetime import datetime, timedelta
 import time
 from dotenv import load_dotenv # Add this import
-from binance.streams import ThreadedWebsocketManager
+from binance import ThreadedWebsocketManager
+import threading
 
 # Load environment variables from .env file
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env')) # Add this line
@@ -424,173 +425,72 @@ def setup_market_data_stream(binance_client, symbol, callback_function, interval
         from importlib.util import find_spec
         
         if find_spec("binance.streams"):
-            # Newer version of binance API with ThreadedWebsocketManager
+            from binance.streams import ThreadedWebsocketManager
             logging.info("Using ThreadedWebsocketManager for WebSocket connection")
-            
-            # Initialize the WebSocket manager
+
             twm = ThreadedWebsocketManager(
                 api_key=binance_client.API_KEY if hasattr(binance_client, 'API_KEY') else None,
                 api_secret=binance_client.API_SECRET if hasattr(binance_client, 'API_SECRET') else None
             )
-            
-            # Start the manager
             twm.start()
-            
-            # Define appropriate stream based on parameters
+
             if interval:
-                # Kline/candlestick stream
                 stream_name = f"{symbol.lower()}@kline_{interval}"
-                stream = twm.start_kline_socket(
-                    callback=callback_function,
-                    symbol=symbol.lower(),
-                    interval=interval
-                )
+                stream = twm.start_kline_socket(callback=callback_function, symbol=symbol.lower(), interval=interval)
                 logging.info(f"Started kline WebSocket stream for {symbol} ({interval})")
             else:
-                # Trade stream (individual trades)
-                stream = twm.start_trade_socket(
-                    callback=callback_function,
-                    symbol=symbol.lower()
-                )
+                stream = twm.start_trade_socket(callback=callback_function, symbol=symbol.lower())
                 logging.info(f"Started trade WebSocket stream for {symbol}")
-            
+
             return {
                 'stream': stream,
                 'manager': twm,
                 'type': 'threaded'
             }
-            
-        elif find_spec("binance.websockets"):
-            # Legacy approach with BinanceSocketManager
-            from binance.websockets import BinanceSocketManager
-            logging.info("Using legacy BinanceSocketManager for WebSocket connection")
-            
-            # Initialize the WebSocket manager
-            bm = BinanceSocketManager(binance_client)
-            
-            # Define appropriate stream based on parameters
-            if interval:
-                # Kline/candlestick stream
-                conn_key = bm.start_kline_socket(
-                    symbol.lower(), 
-                    callback_function,
-                    interval=interval
-                )
-                logging.info(f"Started kline WebSocket stream for {symbol} ({interval})")
-            else:
-                # Trade stream (individual trades)
-                conn_key = bm.start_trade_socket(
-                    symbol.lower(),
-                    callback_function
-                )
-                logging.info(f"Started trade WebSocket stream for {symbol}")
-                
-            # Start the socket manager
-            bm.start()
-            logging.info("WebSocket manager started")
-            
-            return {
-                'connection_key': conn_key,
-                'socket_manager': bm,
-                'type': 'legacy'
-            }
+
         else:
-            # Fallback to REST API polling if websocket modules are not available
             logging.warning("WebSocket modules not found. Falling back to REST API polling.")
-            
-            import threading
-            import time
-            
+
             class RestPollingManager:
                 def __init__(self, client, symbol, callback, interval=None, polling_interval=5.0):
                     self.client = client
                     self.symbol = symbol
                     self.callback = callback
                     self.interval = interval
-                    self.polling_interval = polling_interval  # seconds
+                    self.polling_interval = polling_interval
                     self.running = False
                     self.thread = None
                     self.last_timestamp = 0
-                    
+
                 def _polling_worker(self):
                     while self.running:
                         try:
-                            # For klines/candlesticks
                             if self.interval:
-                                klines = self.client.get_klines(
-                                    symbol=self.symbol,
-                                    interval=self.interval,
-                                    limit=10  # Get last 10 candles
-                                )
-                                
-                                # Find new candles only
+                                klines = self.client.get_klines(symbol=self.symbol, interval=self.interval, limit=10)
                                 for kline in klines:
-                                    timestamp = kline[0]  # Open time
+                                    timestamp = kline[0]
                                     if timestamp > self.last_timestamp:
-                                        # Format message similar to WebSocket format
                                         formatted_msg = {
                                             'e': 'kline',
                                             's': self.symbol,
                                             'k': {
-                                                't': kline[0],  # Open time
-                                                'T': kline[6],  # Close time
+                                                't': kline[0],
+                                                'T': kline[6],
                                                 's': self.symbol,
                                                 'i': self.interval,
-                                                'f': 0,  # First trade ID (placeholder)
-                                                'L': 0,  # Last trade ID (placeholder)
-                                                'o': kline[1],  # Open
-                                                'c': kline[4],  # Close
-                                                'h': kline[2],  # High
-                                                'l': kline[3],  # Low
-                                                'v': kline[5],  # Volume
-                                                'n': 0,  # Number of trades (placeholder)
-                                                'x': True,  # Is closed
-                                                'q': kline[7],  # Quote asset volume
-                                                'V': 0,  # Taker buy base asset volume (placeholder)
-                                                'Q': 0,  # Taker buy quote asset volume (placeholder)
-                                                'B': 0   # Ignore (placeholder)
+                                                'o': kline[1],
+                                                'c': kline[4],
+                                                'h': kline[2],
+                                                'l': kline[3],
+                                                'v': kline[5]
                                             }
                                         }
                                         self.callback(formatted_msg)
-                                        
-                                        # Update last timestamp
-                                        if timestamp > self.last_timestamp:
-                                            self.last_timestamp = timestamp
-                            
-                            # For trade data
-                            else:
-                                trades = self.client.get_recent_trades(symbol=self.symbol, limit=20)
-                                
-                                # Find new trades only
-                                for trade in trades:
-                                    timestamp = trade['time']
-                                    if timestamp > self.last_timestamp:
-                                        # Format message similar to WebSocket format
-                                        formatted_msg = {
-                                            'e': 'trade',
-                                            'E': int(time.time() * 1000),  # Event time (current time)
-                                            's': self.symbol,
-                                            't': trade['id'],
-                                            'p': trade['price'],
-                                            'q': trade['qty'],
-                                            'b': trade.get('buyerOrderId', 0),
-                                            'a': trade.get('sellerOrderId', 0),
-                                            'T': timestamp,
-                                            'm': trade.get('isBuyerMaker', False),
-                                            'M': trade.get('isBestMatch', True)
-                                        }
-                                        self.callback(formatted_msg)
-                                        
-                                        # Update last timestamp
-                                        if timestamp > self.last_timestamp:
-                                            self.last_timestamp = timestamp
-                        
+                                        self.last_timestamp = timestamp
                         except Exception as e:
                             logging.error(f"Error in polling worker: {e}")
-                        
-                        # Sleep until next poll
                         time.sleep(self.polling_interval)
-                
+
                 def start(self):
                     if not self.running:
                         self.running = True
@@ -598,29 +498,17 @@ def setup_market_data_stream(binance_client, symbol, callback_function, interval
                         self.thread.daemon = True
                         self.thread.start()
                         logging.info(f"Started REST API polling for {self.symbol}")
-                        return True
-                    return False
-                    
+
                 def stop(self):
                     if self.running:
                         self.running = False
                         if self.thread:
                             self.thread.join(timeout=2.0)
                         logging.info(f"Stopped REST API polling for {self.symbol}")
-                        return True
-                    return False
-            
-            # Create and start the polling manager
-            manager = RestPollingManager(
-                client=binance_client,
-                symbol=symbol,
-                callback=callback_function,
-                interval=interval,
-                polling_interval=5.0  # Poll every 5 seconds
-            )
-            
+
+            manager = RestPollingManager(client=binance_client, symbol=symbol, callback=callback_function, interval=interval)
             manager.start()
-            
+
             return {
                 'manager': manager,
                 'type': 'rest_polling'
