@@ -6,6 +6,10 @@ import os
 import sys
 from datetime import datetime, timedelta
 import time
+from dotenv import load_dotenv # Add this import
+
+# Load environment variables from .env file
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env')) # Add this line
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
