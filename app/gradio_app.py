@@ -582,8 +582,8 @@ if __name__ == "__main__":
     # Enable debug mode if needed
     try:
         import debugpy
-        debugpy.listen(("0.0.0.0", 5678))
-        print("debugpy is listening on port 5678. Attach your debugger now.")
+        debugpy.listen(("0.0.0.0", 5679))
+        print("debugpy is listening on port 5679. Attach your debugger now.")
     except ImportError:
         print("debugpy not available. Continuing without remote debugging capability.")
     
