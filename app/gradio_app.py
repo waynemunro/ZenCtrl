@@ -53,17 +53,29 @@ def init_pipeline():
         print("Attempting to initialize pipeline on GPU...")
         # Always use int8 version for more memory efficiency
         print("Using int8 transformer model configuration for memory efficiency.")
-        transformer_model = FluxTransformer2DModel.from_pretrained(
-            "sayakpaul/flux.1-schell-int8wo-improved",
-            torch_dtype=torch.int8,       # Model is int8
-            use_safetensors=True,         # Use safetensors
-            low_cpu_mem_usage=True,
-            device_map="auto",            # Automatically map model to available devices
-            offload_folder=offload_folder # offload_state_dict=True removed
-        )
+        try:
+            # Add safe globals for trusted sources
+            torch.serialization.add_safe_globals({"__torch__.FluxTransformer2DModel": FluxTransformer2DModel})
+
+            # Ensure weights_only is set to False for trusted sources
+            transformer_model = FluxTransformer2DModel.from_pretrained(
+                "sayakpaul/flux.1-schell-int8wo-improved",
+                torch_dtype=torch.bfloat16,
+                use_safetensors=False,  # Disable safetensors as the file is missing
+                weights_only=False      # Ensure full model loading
+            )
+        except Exception as e:
+            print(f"[Error] Primary model loading failed: {e}")
+            print("[Fallback] Attempting to load alternative model checkpoint...")
+            transformer_model = FluxTransformer2DModel.from_pretrained(
+                "black-forest-labs/FLUX.1-schnell",
+                torch_dtype=torch.bfloat16,
+                use_safetensors=False
+            )
+        
         pipe = FluxPipeline.from_pretrained(
             "black-forest-labs/FLUX.1-schnell",
-            transformer=transformer_model, # Pass the int8 transformer
+            transformer=transformer_model, # Pass the transformer
             torch_dtype=torch.float16,     # Other components in float16
             use_safetensors=True,         # Use safetensors for other components
             low_cpu_mem_usage=True,

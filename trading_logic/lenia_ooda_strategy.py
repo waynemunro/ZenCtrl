@@ -237,7 +237,7 @@ def calculate_indicators(df, params):
 
     rsi_norm = (df['RSI'] - df['RSI'].min()) / (df['RSI'].max() - df['RSI'].min() + 1e-9)
     
-    df['LeniaSignal'] = rsi_norm.apply(lambda x: lenia_update(x, 
+    df['LeniaSignal'] = rsi_norm.apply(lambda x: lenia_update(np.array([x]), 
                                                               params['lenia_r'], 
                                                               params['lenia_t'], 
                                                               params['lenia_b'], 
