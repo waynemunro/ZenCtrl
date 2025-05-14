@@ -125,13 +125,15 @@ def paste_on_white_background(image: Image.Image) -> Image.Image:
 def process_image_and_text(image, text, steps=8, strength_sub=1.0, strength_spat=1.0, size=1024):
     # center crop image
     w, h, min_size = image.size[0], image.size[1], min(image.size)
-    image = image.crop(
-        (
-            (w - min_size) // 2,
-            (h - min_size) // 2,
-            (w + min_size) // 2,
-        )
+    box = (
+        (w - min_size) // 2,
+        (h - min_size) // 2,
+        (w + min_size) // 2,
+        (h + min_size) // 2,
     )
+    if box is None or len(box) != 4 or box[3] < box[1] or box[2] < box[0]:
+        raise ValueError(f"Invalid crop box: {box}")
+    image = image.crop(box)
     image = image.resize((size, size))
     image = paste_on_white_background(image) #Optional, you can remove this line if you want just make sure the size it matched.
     condition0 = Condition("subject", image, position_delta=(0, size // 16))

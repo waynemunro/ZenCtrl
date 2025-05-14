@@ -7,6 +7,7 @@ import sys
 from datetime import datetime, timedelta
 import time
 from dotenv import load_dotenv # Add this import
+from binance.streams import ThreadedWebsocketManager
 
 # Load environment variables from .env file
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env')) # Add this line
@@ -85,21 +86,26 @@ DEFAULT_PARAMS = {
 }
 
 # --- Lenia Cellular Automaton ---
-def lenia_update(grid, R, T, B, m, s):
-    kh, kw = noyau_g(R)
-    K = np.fft.fft2(np.fft.ifftshift(kh * kw))
+def lenia_update(grid, r, t, b, m, s):
+    # Debugging: Check the shape and content of the grid
+    if not isinstance(grid, np.ndarray):
+        print(f"[Error] Invalid input type for lenia_update: {type(grid)}")
+        return np.zeros((1, 1))
     
-    f_grid = np.fft.fft2(grid)
-    g = np.real(np.fft.ifft2(f_grid * K))
-    
-    g_norm = (g - g.min()) / (g.max() - g.min() + 1e-9) # Normalize to [0,1]
-    
-    # Growth function G(u) = 2 * exp(-((u - m) / s)^2 / 2) - 1
-    growth = 2 * np.exp(-((g_norm - m)**2) / (2 * s**2)) - 1
-    
-    b_factor = np.mean(B) if isinstance(B, list) else B # Handle single B value or list
-    
-    return growth # Returning the raw growth value for now
+    if grid is None or grid.size == 0:
+        print("[Error] Grid is empty or None in lenia_update.")
+        return np.zeros_like(grid)  # Return a grid of zeros to avoid errors
+
+    try:
+        f_grid = np.fft.fft2(grid)
+        kh, kw = noyau_g(r)
+        K = np.fft.fft2(np.fft.ifftshift(kh * kw))
+        b_factor = np.mean(b) if isinstance(b, list) else b  # Handle single B value or list
+        e = np.fft.ifft2(f_grid * K).real  # Example logic for `e`
+        return e  # Return the updated grid
+    except Exception as e:
+        print(f"[Error] Exception in lenia_update: {e}")
+        return np.zeros_like(grid)  # Return a grid of zeros to avoid errors
 
 def noyau_g(R, n=1):
     x = np.arange(-R, R+1)
@@ -419,7 +425,6 @@ def setup_market_data_stream(binance_client, symbol, callback_function, interval
         
         if find_spec("binance.streams"):
             # Newer version of binance API with ThreadedWebsocketManager
-            from binance.streams import ThreadedWebsocketManager
             logging.info("Using ThreadedWebsocketManager for WebSocket connection")
             
             # Initialize the WebSocket manager
